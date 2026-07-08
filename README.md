@@ -9,13 +9,19 @@ Two-part bootstrap for setting up a token-efficient Codex coding workflow in a r
 
 ## Recommended Install Flow
 
-From the repository you want to configure:
+From the repository you want to configure, preview the repo-only setup first:
 
 ```sh
-bash /path/to/CodexHelper/part1.sh --dry-run --repo-only --force --no-apply-codex-config
+bash /path/to/CodexHelper/part1.sh --dry-run --repo-only --no-apply-codex-config
 ```
 
-If the preview looks right:
+If the preview looks right, run it:
+
+```sh
+bash /path/to/CodexHelper/part1.sh --repo-only --no-apply-codex-config
+```
+
+If you are refreshing an existing Codex Helper setup and want generated files overwritten after backups are made, add `--force`:
 
 ```sh
 bash /path/to/CodexHelper/part1.sh --repo-only --force --no-apply-codex-config
