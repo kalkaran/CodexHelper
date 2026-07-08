@@ -1,6 +1,6 @@
 # Codex Helper
 
-Two-part bootstrap for setting up a token-efficient Codex coding workflow in a repository.
+Two-part bootstrap for setting up a token-efficient Codex coding workflow in a repository for MacOS
 
 ## Files
 
