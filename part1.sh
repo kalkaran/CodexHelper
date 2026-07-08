@@ -457,6 +457,38 @@ append_if_missing() {
 	fi
 }
 
+codex_plugin_marketplace_configured() {
+	local name="$1"
+	have codex || return 1
+	codex plugin marketplace list 2>/dev/null | awk -v name="$name" '$1 == name { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+codex_plugin_installed() {
+	local plugin_id="$1"
+	have codex || return 1
+	codex plugin list --json 2>/dev/null | grep -Fq "\"pluginId\": \"$plugin_id\""
+}
+
+print_ponytail_status() {
+	if ! have codex; then
+		printf '  %-20s %s\n' "ponytail" "codex not found"
+		return 0
+	fi
+
+	local plugin_status marketplace_status
+	if codex_plugin_installed "ponytail@ponytail"; then
+		plugin_status="installed"
+	else
+		plugin_status="not installed"
+	fi
+	if codex_plugin_marketplace_configured "ponytail"; then
+		marketplace_status="marketplace configured"
+	else
+		marketplace_status="marketplace not configured"
+	fi
+	printf '  %-20s %s (%s)\n' "ponytail" "$plugin_status" "$marketplace_status"
+}
+
 check_prereqs() {
 	log "Checking local prerequisites"
 
@@ -488,6 +520,7 @@ check_prereqs() {
 	done
 	print_cli_resolution semgrep
 	print_cli_resolution code-review-graph
+	print_ponytail_status
 }
 
 binary_in_active_venv() {
@@ -839,12 +872,28 @@ install_global_tools() {
 
 	# Ponytail: Codex plugin marketplace add can be automated, but actual install/trust is interactive.
 	if have codex; then
-		if confirm "Add Ponytail marketplace to Codex? This does not auto-trust hooks."; then
+		local ponytail_installed=0 ponytail_marketplace_configured=0
+		if codex_plugin_installed "ponytail@ponytail"; then
+			ponytail_installed=1
+		fi
+		if codex_plugin_marketplace_configured "ponytail"; then
+			ponytail_marketplace_configured=1
+		fi
+
+		if [[ "$ponytail_installed" == "1" ]]; then
+			log "Ponytail Codex plugin already installed."
+			record_install_ok "Ponytail Codex plugin already installed"
+		elif [[ "$ponytail_marketplace_configured" == "1" ]]; then
+			log "Ponytail Codex marketplace already configured."
+			record_install_ok "Ponytail Codex marketplace already configured"
+			record_install_skipped "Ponytail plugin install still requires /plugins and hook trust review"
+		elif confirm "Add Ponytail marketplace to Codex? This does not auto-trust hooks."; then
 			if [[ "$DRY_RUN" == "1" ]]; then
 				run codex codex plugin marketplace add DietrichGebert/ponytail
 				record_install_skipped "Ponytail Codex marketplace add would run (dry-run)"
 			elif run codex codex plugin marketplace add DietrichGebert/ponytail; then
 				record_install_ok "Ponytail Codex marketplace added"
+				record_install_skipped "Ponytail plugin install still requires /plugins and hook trust review"
 			else
 				warn "Ponytail marketplace add failed. You can run it manually."
 				record_install_failed "Ponytail Codex marketplace add failed"
@@ -887,6 +936,19 @@ install_global_tools() {
 		record_install_ok "semgrep already present at $(resolve_binary semgrep)"
 	else
 		record_install_skipped "semgrep not installed; part2.sh can install/wire it"
+	fi
+
+	if has_source_file \( -name '*.sh' -o -name '*.bash' -o -name '*.zsh' \); then
+		if have_cli shellcheck; then
+			record_install_ok "shellcheck already present at $(resolve_binary shellcheck)"
+		else
+			record_install_skipped "shellcheck not installed; part2.sh can install/wire it"
+		fi
+		if have_cli shfmt; then
+			record_install_ok "shfmt already present at $(resolve_binary shfmt)"
+		else
+			record_install_skipped "shfmt not installed; part2.sh can install/wire it"
+		fi
 	fi
 
 	# Context7: interactive OAuth, only run when explicitly requested.
@@ -996,6 +1058,16 @@ detect_stack() {
 		LINT_CMD='find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o -name "*.php" -print0 | xargs -0 -n1 php -l; if [ -x vendor/bin/phpcs ]; then vendor/bin/phpcs --standard=PSR12 --extensions=php --ignore=vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/* .; else echo "vendor/bin/phpcs not installed; skipping PHPCS"; fi; command -v biome >/dev/null 2>&1 && biome check . || echo "biome not installed; skipping web lint"; command -v htmlhint >/dev/null 2>&1 && htmlhint --ignore "**/.git/**,**/node_modules/**,**/vendor/**,**/dist/**,**/build/**,**/coverage/**,**/.cache/**,**/.venv/**" "**/*.html" || echo "htmlhint not installed; skipping HTML lint"'
 		TYPECHECK_CMD='if [ -x vendor/bin/phpstan ]; then find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o -name "*.php" -print0 | xargs -0 vendor/bin/phpstan analyse --memory-limit=1G --no-progress --; else echo "vendor/bin/phpstan not installed; skipping PHPStan"; fi'
 		BUILD_CMD='@echo "No build step for PHP/static site."'
+	fi
+
+	if has_source_file \( -name '*.sh' -o -name '*.bash' -o -name '*.zsh' \); then
+		if [[ "$DETECTED_STACK" == "unknown" ]]; then
+			DETECTED_STACK="shell"
+			TEST_CMD='@echo "No shell test runner configured yet."'
+			LINT_CMD='if command -v shellcheck >/dev/null 2>&1; then find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o \( -name "*.sh" -o -name "*.bash" -o -name "*.zsh" \) -print0 | xargs -0 shellcheck; else echo "shellcheck not installed; run part2.sh to install/wire shell checks"; fi'
+			TYPECHECK_CMD='@echo "No separate typecheck step for shell scripts."'
+			BUILD_CMD='@echo "No build step for shell scripts."'
+		fi
 	fi
 
 	if [[ -f go.mod ]]; then
@@ -2320,6 +2392,10 @@ from typing import Any
 PATH_KEYS = {"file", "file_path", "filename", "path", "target_file"}
 
 
+def emit_response() -> None:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse"}}))
+
+
 def collect_paths(value: Any, paths: set[str]) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -2350,7 +2426,8 @@ def main() -> int:
     root = git_root()
     checker = root / "scripts" / "agent-check-edited.py"
     if not checker.is_file():
-        print("[post-edit-check] scripts/agent-check-edited.py not found; skipping")
+        print("[post-edit-check] scripts/agent-check-edited.py not found; skipping", file=sys.stderr)
+        emit_response()
         return 0
 
     existing_paths: list[str] = []
@@ -2364,7 +2441,8 @@ def main() -> int:
             existing_paths.append(str(relative))
 
     if not existing_paths:
-        print("[post-edit-check] no edited file paths found in hook payload; skipping per-edit check")
+        print("[post-edit-check] no edited file paths found in hook payload; skipping per-edit check", file=sys.stderr)
+        emit_response()
         return 0
 
     cache_file = root / ".cache" / "codex-edited-files.txt"
@@ -2372,11 +2450,15 @@ def main() -> int:
     previous = set(cache_file.read_text(encoding="utf-8").splitlines()) if cache_file.is_file() else set()
     cache_file.write_text("\n".join(sorted(previous | set(existing_paths))) + "\n", encoding="utf-8")
 
-    print("[post-edit-check] checking edited files:")
+    print("[post-edit-check] checking edited files:", file=sys.stderr)
     for path in existing_paths:
-        print(f"  - {path}")
+        print(f"  - {path}", file=sys.stderr)
 
-    return subprocess.run([sys.executable, str(checker), *existing_paths], cwd=root, check=False).returncode
+    completed = subprocess.run([sys.executable, str(checker), *existing_paths], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    if completed.stdout:
+        print(completed.stdout, file=sys.stderr, end="")
+    emit_response()
+    return completed.returncode
 
 
 if __name__ == "__main__":
@@ -2735,6 +2817,27 @@ Detected stack: $DETECTED_STACK
 EOF_QUALITY_HEADER
 
 	case "$DETECTED_STACK" in
+	shell)
+		cat <<EOF_QUALITY_SHELL
+For this shell script repo:
+  # Linter/static analyzer:
+  $(if have_cli shellcheck; then printf 'shellcheck is already installed at %s\n' "$(resolve_binary shellcheck)"; else printf 'brew install shellcheck\n'; fi)
+
+  # Formatter:
+  $(if have_cli shfmt; then printf 'shfmt is already installed at %s\n' "$(resolve_binary shfmt)"; else printf 'brew install shfmt\n'; fi)
+
+What those enable:
+  - ShellCheck: shell script linting/static analysis
+  - shfmt: shell script formatting
+
+Install notes:
+  - Homebrew installs ShellCheck/shfmt as machine-level CLI tools.
+  - To preview install/wire/fix behavior, run: bash part2.sh --dry-run --wire --fix
+  - To do the work interactively, run: bash part2.sh
+  - For non-interactive setup, run: bash part2.sh --yes --wire --fix
+
+EOF_QUALITY_SHELL
+		;;
 	php-static | php-static+node)
 		cat <<'EOF_QUALITY_PHP_STATIC'
 For this PHP/static HTML/CSS/JS repo:
@@ -2879,22 +2982,64 @@ print_next_steps() {
    you trust them.
 
 6. Finish optional Ponytail setup
+EOF_NEXT
+
+	if ! have codex; then
+		cat <<'EOF_PONYTAIL_MISSING_CODEX'
+   codex CLI was not found, so this script could not check or configure Ponytail.
+   Install Codex first, then rerun this bootstrap or add Ponytail manually.
+
+EOF_PONYTAIL_MISSING_CODEX
+	elif codex_plugin_installed "ponytail@ponytail"; then
+		cat <<'EOF_PONYTAIL_INSTALLED'
+   Ponytail is already installed in Codex.
+   Open /hooks only if Codex reports hooks that still need review/trust.
+
+EOF_PONYTAIL_INSTALLED
+	elif codex_plugin_marketplace_configured "ponytail"; then
+		cat <<'EOF_PONYTAIL_MARKETPLACE'
+   Ponytail marketplace is already configured.
+   Run codex, open /plugins, install Ponytail, open /hooks, review/trust its hooks, and start a new thread.
+
+EOF_PONYTAIL_MARKETPLACE
+	else
+		cat <<'EOF_PONYTAIL_NOT_CONFIGURED'
    If Ponytail is not already active:
    codex plugin marketplace add DietrichGebert/ponytail
    codex
    Then open /plugins, install Ponytail, open /hooks, review/trust its hooks, and start a new thread.
 
+EOF_PONYTAIL_NOT_CONFIGURED
+	fi
+
+	cat <<'EOF_NEXT'
 7. Context7
    Run when ready for interactive OAuth/API setup:
    npx ctx7 setup
 
 8. code-review-graph
+EOF_NEXT
+
+	if have_cli code-review-graph && ! binary_in_active_venv code-review-graph; then
+		cat <<EOF_CRG_INSTALLED
+   code-review-graph is already installed at $(resolve_binary code-review-graph).
+   Only run these manually if the bootstrap reported Codex integration or graph build failed:
+   "$(uv tool dir --bin 2>/dev/null || dirname "$(resolve_binary code-review-graph)")/code-review-graph" install --platform codex
+   "$(uv tool dir --bin 2>/dev/null || dirname "$(resolve_binary code-review-graph)")/code-review-graph" build
+
+EOF_CRG_INSTALLED
+	else
+		cat <<'EOF_CRG_MISSING'
    Only run these manually if the bootstrap reported code-review-graph missing or failed:
    uv tool list | grep -i code-review || uv tool install code-review-graph
    export PATH="$(uv tool dir --bin):$PATH"
    "$(uv tool dir --bin)/code-review-graph" install --platform codex
    "$(uv tool dir --bin)/code-review-graph" build
 
+EOF_CRG_MISSING
+	fi
+
+	cat <<'EOF_NEXT'
 9. Codex Git-command blocker
    The script searches for ~/.codex/config.toml and can apply the hook when you approve it.
    To apply non-interactively, rerun with --apply-codex-config.
