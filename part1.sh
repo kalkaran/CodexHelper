@@ -2,7 +2,7 @@
 # Bootstrap a token-efficient, quality-focused AI coding workflow for Codex.
 # Installs/configures: Ponytail, code-review-graph, optional Context7, and
 # repo-local Codex workflow files. Semgrep and project linters are handled by
-# ai-quality-bootstrap-v1.sh.
+# part2.sh.
 #
 # Version: 2026-07-06-v12
 #
@@ -882,11 +882,11 @@ install_global_tools() {
 	fi
 
 	# Semgrep is a repo quality/security tool. This bootstrap only recommends it;
-	# ai-quality-bootstrap-v1.sh handles installation and Makefile wiring.
+	# part2.sh handles installation and Makefile wiring.
 	if have_cli semgrep; then
 		record_install_ok "semgrep already present at $(resolve_binary semgrep)"
 	else
-		record_install_skipped "semgrep not installed; ai-quality-bootstrap-v1.sh can install/wire it"
+		record_install_skipped "semgrep not installed; part2.sh can install/wire it"
 	fi
 
 	# Context7: interactive OAuth, only run when explicitly requested.
@@ -1496,10 +1496,10 @@ EOF_WIKI_MAKE
 				} >>Makefile
 				log "Appended wiki-ai target to existing Makefile"
 			fi
-			log "Makefile already exists; leaving other targets unchanged. Run ai-quality-bootstrap-v1.sh to install, wire, and apply safe fixes."
+			log "Makefile already exists; leaving other targets unchanged. Run part2.sh to install, wire, and apply safe fixes."
 		fi
 	else
-		log "No Makefile found; not creating placeholder quality targets. Run ai-quality-bootstrap-v1.sh to install, wire, and apply safe fixes."
+		log "No Makefile found; not creating placeholder quality targets. Run part2.sh to install, wire, and apply safe fixes."
 	fi
 }
 
@@ -2764,9 +2764,9 @@ Install notes:
   - npm installs Biome/HTMLHint as repo-local dev tools and records them in package.json.
   - Composer installs PHPCS/PHPStan as repo-local dev tools under vendor/bin/.
   - Homebrew installs ShellCheck/shfmt and Semgrep as machine-level CLI tools.
-  - To preview install/wire/fix behavior, run: bash ai-quality-bootstrap-v1.sh --dry-run --wire --fix
-  - To do the work interactively, run: bash ai-quality-bootstrap-v1.sh
-  - For non-interactive setup, run: bash ai-quality-bootstrap-v1.sh --yes --wire --fix
+  - To preview install/wire/fix behavior, run: bash part2.sh --dry-run --wire --fix
+  - To do the work interactively, run: bash part2.sh
+  - For non-interactive setup, run: bash part2.sh --yes --wire --fix
 
 EOF_QUALITY_PHP_STATIC
 		;;
@@ -2851,13 +2851,13 @@ print_next_steps() {
 
 2. Run the quality bootstrap
    Preview the full install/wire/fix flow first:
-   bash ai-quality-bootstrap-v1.sh --dry-run --wire --fix
+   bash part2.sh --dry-run --wire --fix
 
    If the preview is correct, run it normally and answer the prompts:
-   bash ai-quality-bootstrap-v1.sh
+   bash part2.sh
 
    For non-interactive setup:
-   bash ai-quality-bootstrap-v1.sh --yes --wire --fix
+   bash part2.sh --yes --wire --fix
 
 3. Verify the repo quality gate
    make edited-ai
