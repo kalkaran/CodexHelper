@@ -2475,9 +2475,17 @@ EOF_POST_EDIT_HOOK
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
+
+
+def emit_response(exit_code: int, reason: str | None = None) -> None:
+    if exit_code == 0:
+        print(json.dumps({"continue": True}))
+    else:
+        print(json.dumps({"decision": "block", "reason": reason or "Edited-file quality gate failed; review hook stderr output and fix it before stopping."}))
 
 
 def git_root() -> Path:
@@ -2491,26 +2499,38 @@ def main() -> int:
     root = git_root()
     checker = root / "scripts" / "agent-check-edited.py"
     if not checker.is_file():
-        print("[stop-edited-check] scripts/agent-check-edited.py not found; skipping")
+        print("[stop-edited-check] scripts/agent-check-edited.py not found; skipping", file=sys.stderr)
         return 0
     cache_file = root / ".cache" / "codex-edited-files.txt"
     if not cache_file.is_file():
-        print("[stop-edited-check] no recorded edited files; skipping")
+        print("[stop-edited-check] no recorded edited files; skipping", file=sys.stderr)
         return 0
     files = [line.strip() for line in cache_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not files:
-        print("[stop-edited-check] recorded edited file list is empty; skipping")
+        print("[stop-edited-check] recorded edited file list is empty; skipping", file=sys.stderr)
         cache_file.unlink(missing_ok=True)
         return 0
-    print("[stop-edited-check] checking recorded edited files before stop")
-    result = subprocess.run(["python3", str(checker), *files], cwd=root, check=False).returncode
+    print("[stop-edited-check] checking recorded edited files before stop", file=sys.stderr)
+    completed = subprocess.run([sys.executable, str(checker), *files], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    if completed.stdout:
+        print(completed.stdout, file=sys.stderr, end="")
+    result = completed.returncode
     if result == 0:
         cache_file.unlink(missing_ok=True)
     return result
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    exit_code = 1
+    reason = None
+    try:
+        exit_code = main()
+    except Exception as exc:
+        reason = f"Stop hook failed unexpectedly: {exc}"
+        print(f"[stop-edited-check] unexpected error: {exc}", file=sys.stderr)
+    finally:
+        emit_response(exit_code, reason)
+    sys.exit(0)
 EOF_STOP_HOOK
 	)
 	write_file ".codex/hooks/stop_edited_check.py" "$stop_hook" "0755"

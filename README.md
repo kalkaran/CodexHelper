@@ -1,42 +1,69 @@
 # Codex Helper
 
-Two-part bootstrap for setting up a token-efficient Codex coding workflow in a repository for MacOS
+Two-part bootstrap for setting up a token-efficient Codex coding workflow in a repository.
+Use `MacOS/` on macOS and `WSL/` inside Ubuntu WSL.
 
 ## Files
 
-- `part1.sh` - main Codex workflow bootstrap. Creates repo guidance, `agent/`, `codebase-wiki/`, Codex hook templates, verification scripts, and the `wiki-ai` workflow.
-- `part2.sh` - quality tooling bootstrap. Installs/wires available formatters, linters, typecheckers, security checks, AI-capped `*-ai` targets, and `edited-ai`.
+- `MacOS/part1.sh` - macOS Codex workflow bootstrap. Creates repo guidance, `agent/`, `codebase-wiki/`, Codex hook templates, verification scripts, and the `wiki-ai` workflow.
+- `MacOS/part2.sh` - macOS quality tooling bootstrap. Installs/wires available formatters, linters, typecheckers, security checks, AI-capped `*-ai` targets, and `edited-ai`.
+- `WSL/part1.sh` - Ubuntu WSL Codex workflow bootstrap. Uses `apt-get`, `.bashrc`, Ubuntu certificate paths, and isolated `uv`/`pipx` tool installs.
+- `WSL/part2.sh` - Ubuntu WSL quality tooling bootstrap. Installs/wires available formatters, linters, typecheckers, security checks, AI-capped `*-ai` targets, and `edited-ai`.
 
-## Recommended Install Flow
+## macOS Install Flow
 
 From the repository you want to configure, preview the repo-only setup first:
 
 ```sh
-bash /path/to/CodexHelper/part1.sh --dry-run --repo-only --no-apply-codex-config
+bash /path/to/CodexHelper/MacOS/part1.sh --dry-run --repo-only --no-apply-codex-config
 ```
 
 If the preview looks right, run it:
 
 ```sh
-bash /path/to/CodexHelper/part1.sh --repo-only --no-apply-codex-config
+bash /path/to/CodexHelper/MacOS/part1.sh --repo-only --no-apply-codex-config
 ```
 
-If you are refreshing an existing Codex Helper setup and want generated files overwritten after backups are made, add `--force`:
+If you are refreshing an existing setup and want generated files overwritten after backups are made, add `--force`:
 
 ```sh
-bash /path/to/CodexHelper/part1.sh --repo-only --force --no-apply-codex-config
+bash /path/to/CodexHelper/MacOS/part1.sh --repo-only --force --no-apply-codex-config
 ```
 
-Then preview the quality tooling setup:
+Then preview and run the quality tooling setup:
 
 ```sh
-bash /path/to/CodexHelper/part2.sh --dry-run --wire --fix
+bash /path/to/CodexHelper/MacOS/part2.sh --dry-run --wire --fix
+bash /path/to/CodexHelper/MacOS/part2.sh --wire --fix
 ```
 
-If the preview looks right:
+## Ubuntu WSL Install Flow
+
+Run these commands inside Ubuntu WSL, from the repository you want to configure.
+
+Preview the repo-only setup first:
 
 ```sh
-bash /path/to/CodexHelper/part2.sh --wire --fix
+bash /path/to/CodexHelper/WSL/part1.sh --dry-run --repo-only --no-apply-codex-config
+```
+
+If the preview looks right, run it:
+
+```sh
+bash /path/to/CodexHelper/WSL/part1.sh --repo-only --no-apply-codex-config
+```
+
+If Ubuntu WSL is missing base tools and you want the bootstrap to install them with `apt-get`, use:
+
+```sh
+bash /path/to/CodexHelper/WSL/part1.sh --install-prereqs
+```
+
+Then preview and run the quality tooling setup:
+
+```sh
+bash /path/to/CodexHelper/WSL/part2.sh --dry-run --wire --fix
+bash /path/to/CodexHelper/WSL/part2.sh --wire --fix
 ```
 
 ## After Install
@@ -63,5 +90,6 @@ Restart Codex in the repo root so it reloads `AGENTS.md`. If project hooks were 
 
 - `part1.sh` does not auto-trust Codex hooks. Trust them manually with `/hooks`.
 - `part2.sh` only wires checks for tools that are actually available.
+- The WSL scripts are intended for Ubuntu WSL, not every Linux distro.
 - Full tool logs are stored under `.cache/`; AI-facing output is capped.
 - Review generated `codebase-wiki/` sections before relying on them as durable project memory.
