@@ -78,15 +78,35 @@ bash /path/to/CodexHelper/WSL/part2.sh --wire --fix
 
 Restart Codex in the repo root so it reloads `AGENTS.md`. If project hooks were created, open `/hooks` in Codex CLI, review/trust the hooks, then start a new thread.
 
-Run one quick check after setup:
+Run one manual check after setup to confirm the generated checker works:
 
 ```sh
 make edited-ai
 ```
 
+After that, trusted hooks handle normal edited-file checks automatically.
+
 ## Using The Workflow
 
-Once hooks are trusted, Codex checks edited files automatically after edits and before it stops. You usually do not need to run `make edited-ai` after every small change.
+Once hooks are trusted, Codex checks edited files automatically after edits and before it stops. The hooks do not literally run `make edited-ai`; they call the same underlying checker, `scripts/agent-check-edited.py`, for the files Codex edited.
+
+You normally do not need to run `make edited-ai` after every small change.
+
+What still has to be done manually:
+
+- Trust project hooks in `/hooks` after install or after hook files change.
+- Run `make edited-ai` once after setup, when hooks are not trusted, or when you want an explicit quick check.
+- Run `make lint-ai` when you want broader non-Semgrep lint checks.
+- Run `make verify-ai` for large, risky, security-sensitive, or cross-project changes.
+- Run `make wiki-ai` only when stable project knowledge should be written to `codebase-wiki/`.
+- Review generated `codebase-wiki/` changes before relying on them.
+
+What the hooks do:
+
+- `pre_tool_use_policy.py` runs before Codex shell commands. It blocks Git-writing commands and a few destructive shell commands when configured.
+- `post_tool_use.py` runs after tools. It is a placeholder for future logging or checks and does not block anything today.
+- `post_edit_check.py` runs after Codex edit tools. It checks the edited paths and records them for the stop hook.
+- `stop_edited_check.py` runs before Codex stops. It rechecks recorded edited files and blocks stopping if the edited-file check fails.
 
 Use these commands when needed:
 
