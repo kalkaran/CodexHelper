@@ -1,14 +1,22 @@
 # Codex Helper
 
-Two-part bootstrap for setting up a token-efficient Codex coding workflow in a repository.
-Use `MacOS/` on macOS and `WSL/` inside Ubuntu WSL.
+Codex Helper adds a small AI coding workflow to another repo.
 
-## Files
+Use `MacOS/` on macOS. Use `WSL/` inside Ubuntu WSL.
 
-- `MacOS/part1.sh` - macOS Codex workflow bootstrap. Creates repo guidance, `agent/`, `codebase-wiki/`, Codex hook templates, verification scripts, and the `wiki-ai` workflow.
-- `MacOS/part2.sh` - macOS quality tooling bootstrap. Installs/wires available formatters, linters, typecheckers, security checks, AI-capped `*-ai` targets, and `edited-ai`.
-- `WSL/part1.sh` - Ubuntu WSL Codex workflow bootstrap. Uses `apt-get`, `.bashrc`, Ubuntu certificate paths, and isolated `uv`/`pipx` tool installs.
-- `WSL/part2.sh` - Ubuntu WSL quality tooling bootstrap. Installs/wires available formatters, linters, typecheckers, security checks, AI-capped `*-ai` targets, and `edited-ai`.
+It helps Codex:
+
+- read the right project instructions
+- check files it edits
+- keep long tool output short
+- save useful repo knowledge in `codebase-wiki/`
+
+## What The Parts Do
+
+- `part1.sh` adds Codex instructions, hooks, repo memory files, and helper scripts.
+- `part2.sh` finds the tools your repo can use, then creates Makefile commands for checks.
+- `MacOS/` is for macOS.
+- `WSL/` is for Ubuntu WSL.
 
 ## macOS Install Flow
 
@@ -68,28 +76,43 @@ bash /path/to/CodexHelper/WSL/part2.sh --wire --fix
 
 ## After Install
 
-Run the AI-safe checks and populate repo memory:
+Restart Codex in the repo root so it reloads `AGENTS.md`. If project hooks were created, open `/hooks` in Codex CLI, review/trust the hooks, then start a new thread.
+
+Run one quick check after setup:
 
 ```sh
 make edited-ai
-make verify-ai
-make wiki-ai
 ```
 
-Restart Codex in the repo root so it reloads `AGENTS.md`. If project hooks were created, open `/hooks` in Codex CLI, review/trust the hooks, then start a new thread.
+## Using The Workflow
+
+Once hooks are trusted, Codex checks edited files automatically after edits and before it stops. You usually do not need to run `make edited-ai` after every small change.
+
+Use these commands when needed:
+
+- `make edited-ai` checks only edited files. Use it after setup, when hooks are not trusted, or when you want a quick manual check.
+- `make lint-ai` runs broader lint checks without Semgrep.
+- `make verify-ai` runs bigger checks. Use it for large, risky, security-sensitive, or cross-project changes. It may run Semgrep.
+- `make wiki-ai` updates `codebase-wiki/`. Use it only when you learned stable facts that future agents should know.
+- `./scripts/agent-verify.sh` runs the edited-file check by default. Pass `lint`, `verify`, `security`, or `graph` to choose another mode.
+
+Semgrep can be verbose. It is not automatic. It runs only when you ask for security or verify checks, or when you start `part1.sh` with `--security-scan`.
+
+Review generated `codebase-wiki/` changes before treating them as durable project memory.
 
 ## What This Sets Up
 
-- AI-capped linter/typechecker/security output so tools do not flood the Codex transcript.
-- Edited-file checks that format first, then lint and typecheck only changed files.
-- Optional Codex hooks that run edited-file checks after file edits and before Codex stops.
-- `codebase-wiki/` repo memory generated from durable repo guidance and Graphify output.
-- `AGENTS.md` and `agent/` instructions so Codex uses the workflow consistently.
+- Short output for AI checks, with full logs in `.cache/`.
+- Checks for files Codex edited.
+- Optional Codex hooks that run those edited-file checks automatically.
+- `AGENTS.md` and `agent/` instructions for future Codex sessions.
+- `codebase-wiki/` for stable project knowledge.
 
 ## Notes
 
 - `part1.sh` does not auto-trust Codex hooks. Trust them manually with `/hooks`.
 - `part2.sh` only wires checks for tools that are actually available.
+- Semgrep is wired as an explicit security check, not as an automatic hook.
 - The WSL scripts are intended for Ubuntu WSL, not every Linux distro.
 - Full tool logs are stored under `.cache/`; AI-facing output is capped.
 - Review generated `codebase-wiki/` sections before relying on them as durable project memory.
