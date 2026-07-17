@@ -11,7 +11,9 @@ YES=0
 WIRE_MODE="ask"    # ask | yes | no
 INSTALL_MODE="ask" # ask | yes | no
 FIX_MODE="ask"     # ask | yes | no
+FRESH_INSTALL=0
 REPO_ROOT=""
+PYTHON_INDEX_URL="${UV_DEFAULT_INDEX:-${PIP_INDEX_URL:-}}"
 
 log() { printf '[ai-quality] %s\n' "$*"; }
 warn() { printf '[warn] %s\n' "$*" >&2; }
@@ -24,17 +26,21 @@ Usage: part2.sh [options]
 Options:
   --dry-run          Show what would happen without writing files.
   --yes              Non-interactive defaults. Continues with available checks.
+  --fresh-install    Fresh quality setup: install missing tools, wire Makefile, run safe fixes.
   --install          Install missing recommended quality tools without prompting.
   --no-install       Do not install tools; recommendations/wiring only.
   --wire             Write/update Makefile using only currently available checks.
   --no-wire          Do not write Makefile; recommendations only.
   --fix              Run safe automatic format/fix commands after wiring.
   --no-fix           Do not run automatic format/fix commands.
+  --python-index-url URL
+                     Use a Python package mirror for uv/pipx installs.
   --repo PATH        Run against a specific repo/path.
   -h, --help         Show this help.
 
 Design:
   - Prompts before installing missing dev quality tools unless --yes/--install is used.
+  - --fresh-install is equivalent to --install --wire --fix; existing Makefile is backed up.
   - Refreshes tool detection after installation before wiring checks.
   - Prompts to run safe automatic fixers after wiring unless --no-fix is used.
   - Keeps installs scoped to dev tooling.
@@ -54,6 +60,13 @@ while [[ $# -gt 0 ]]; do
 		;;
 	--yes)
 		YES=1
+		shift
+		;;
+	--fresh-install)
+		FRESH_INSTALL=1
+		INSTALL_MODE="yes"
+		WIRE_MODE="yes"
+		FIX_MODE="yes"
 		shift
 		;;
 	--install)
@@ -78,6 +91,18 @@ while [[ $# -gt 0 ]]; do
 		;;
 	--no-fix)
 		FIX_MODE="no"
+		shift
+		;;
+	--python-index-url)
+		PYTHON_INDEX_URL="${2:-}"
+		if [[ -z "$PYTHON_INDEX_URL" ]]; then
+			err "--python-index-url requires a URL"
+			exit 2
+		fi
+		shift 2
+		;;
+	--python-index-url=*)
+		PYTHON_INDEX_URL="${1#*=}"
 		shift
 		;;
 	--repo)
@@ -126,6 +151,12 @@ ROOT="$(find_repo_root)"
 cd "$ROOT"
 log "Working in: $ROOT"
 [[ "$DRY_RUN" -eq 1 ]] && warn "Dry run: no files will be written."
+[[ "$FRESH_INSTALL" -eq 1 ]] && log "Fresh quality setup enabled: install missing tools, wire Makefile, run safe fixes."
+if [[ -n "$PYTHON_INDEX_URL" ]]; then
+	export UV_DEFAULT_INDEX="$PYTHON_INDEX_URL"
+	export PIP_INDEX_URL="$PYTHON_INDEX_URL"
+	log "Using configured Python package index mirror for uv/pipx installs."
+fi
 
 has_file() { [[ -f "$1" ]]; }
 cmd_exists() { command -v "$1" >/dev/null 2>&1; }
@@ -455,6 +486,9 @@ print_recommendations() {
 Python:
   Linter/formatter: Ruff
     uv tool install ruff
+
+  If your org uses an internal Python package mirror, rerun with:
+    bash part2.sh --fresh-install --python-index-url https://your-python-mirror.example.com/simple
 
   Tests, only when the project has a real Python environment:
     pytest

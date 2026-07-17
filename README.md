@@ -13,8 +13,8 @@ It helps Codex:
 
 ## What The Parts Do
 
-- `part1.sh` adds Codex instructions, hooks, repo memory files, and helper scripts.
-- `part2.sh` finds the tools your repo can use, then creates Makefile commands for checks.
+- `part1.sh` adds Codex instructions, hooks, repo memory files, helper scripts, and prerequisite package-manager checks.
+- `part2.sh` detects what is in the repo, asks before installing matching quality tools, then creates Makefile commands for checks.
 - `MacOS/` is for macOS.
 - `WSL/` is for Ubuntu WSL.
 
@@ -38,11 +38,29 @@ If you are refreshing an existing setup and want generated files overwritten aft
 bash /path/to/CodexHelper/MacOS/part1.sh --repo-only --force --no-apply-codex-config
 ```
 
+For a fresh repo bootstrap refresh that also checks/installs `uv` and `pipx`, use `--fresh-install`:
+
+```sh
+bash /path/to/CodexHelper/MacOS/part1.sh --repo-only --fresh-install --no-apply-codex-config
+```
+
+If your network requires an internal Python package mirror for prerequisite Python tooling, pass it to `part1.sh`:
+
+```sh
+bash /path/to/CodexHelper/MacOS/part1.sh --repo-only --fresh-install --python-index-url=https://your-python-mirror.example.com/simple --no-apply-codex-config
+```
+
 Then preview and run the quality tooling setup:
 
 ```sh
-bash /path/to/CodexHelper/MacOS/part2.sh --dry-run --wire --fix
-bash /path/to/CodexHelper/MacOS/part2.sh --wire --fix
+bash /path/to/CodexHelper/MacOS/part2.sh --dry-run --fresh-install
+bash /path/to/CodexHelper/MacOS/part2.sh --fresh-install
+```
+
+If your network requires an internal Python package mirror for quality-tool installs, pass it to `part2.sh`:
+
+```sh
+bash /path/to/CodexHelper/MacOS/part2.sh --fresh-install --python-index-url https://your-python-mirror.example.com/simple
 ```
 
 ## Ubuntu WSL Install Flow
@@ -67,11 +85,29 @@ If Ubuntu WSL is missing base tools and you want the bootstrap to install them w
 bash /path/to/CodexHelper/WSL/part1.sh --install-prereqs
 ```
 
+For a fresh repo bootstrap refresh that also checks/installs `uv` and `pipx`, use `--fresh-install`:
+
+```sh
+bash /path/to/CodexHelper/WSL/part1.sh --repo-only --fresh-install --no-apply-codex-config
+```
+
+If your network requires an internal Python package mirror for prerequisite Python tooling, pass it to `part1.sh`:
+
+```sh
+bash /path/to/CodexHelper/WSL/part1.sh --repo-only --fresh-install --python-index-url=https://your-python-mirror.example.com/simple --no-apply-codex-config
+```
+
 Then preview and run the quality tooling setup:
 
 ```sh
-bash /path/to/CodexHelper/WSL/part2.sh --dry-run --wire --fix
-bash /path/to/CodexHelper/WSL/part2.sh --wire --fix
+bash /path/to/CodexHelper/WSL/part2.sh --dry-run --fresh-install
+bash /path/to/CodexHelper/WSL/part2.sh --fresh-install
+```
+
+If your network requires an internal Python package mirror for quality-tool installs, pass it to `part2.sh`:
+
+```sh
+bash /path/to/CodexHelper/WSL/part2.sh --fresh-install --python-index-url https://your-python-mirror.example.com/simple
 ```
 
 ## After Install

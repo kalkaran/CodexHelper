@@ -19,6 +19,7 @@ SCRIPT_NAME="$(basename "$0")"
 YES=0
 DRY_RUN=0
 FORCE=0
+FRESH_INSTALL=0
 SKIP_GLOBAL=0
 WITH_LLM_COUNCIL=0
 RUN_CONTEXT7=0
@@ -30,6 +31,7 @@ INSTALL_BREW=0
 INSTALL_UV=0
 INSTALL_PIPX=0
 INSTALL_PREREQS=0
+PYTHON_INDEX_URL="${UV_DEFAULT_INDEX:-${PIP_INDEX_URL:-}}"
 
 INSTALL_OK=()
 INSTALL_FAILED=()
@@ -49,6 +51,7 @@ Options:
   --yes                 Do not prompt before installs/file writes.
   --dry-run             Print what would happen, but do not change files or install tools.
   --force               Overwrite managed files after backing them up.
+  --fresh-install       Freshen repo files and explicitly install/check uv + pipx.
   --repo-only           Only create repo files; skip global tool installs.
   --skip-global         Alias for --repo-only.
   --with-llm-council    Clone Karpathy llm-council into ~/.local/share/llm-council.
@@ -63,6 +66,8 @@ Options:
   --install-brew        Explicitly install Homebrew if missing.
   --install-uv          Explicitly install uv if missing, using Homebrew.
   --install-pipx        Explicitly install pipx if missing, using Homebrew.
+  --python-index-url=URL
+                        Use a Python package mirror for uv/pipx installs.
   --no-crg-build        Install/configure code-review-graph but skip initial graph build.
   -h, --help            Show this help.
 
@@ -71,6 +76,9 @@ Recommended first run:
 
 Fully non-interactive repo + tools setup:
   bash $SCRIPT_NAME --yes
+
+Freshen an existing setup after backing up managed files and checking uv/pipx:
+  bash $SCRIPT_NAME --fresh-install
 
 Repo scaffolding only:
   bash $SCRIPT_NAME --repo-only
@@ -90,6 +98,13 @@ for arg in "$@"; do
 	--yes | -y) YES=1 ;;
 	--dry-run) DRY_RUN=1 ;;
 	--force) FORCE=1 ;;
+	--fresh-install)
+		FRESH_INSTALL=1
+		FORCE=1
+		INSTALL_BREW=1
+		INSTALL_UV=1
+		INSTALL_PIPX=1
+		;;
 	--skip-global | --repo-only) SKIP_GLOBAL=1 ;;
 	--with-llm-council) WITH_LLM_COUNCIL=1 ;;
 	--context7) RUN_CONTEXT7=1 ;;
@@ -107,6 +122,7 @@ for arg in "$@"; do
 	--install-brew) INSTALL_BREW=1 ;;
 	--install-uv) INSTALL_UV=1 ;;
 	--install-pipx) INSTALL_PIPX=1 ;;
+	--python-index-url=*) PYTHON_INDEX_URL="${arg#*=}" ;;
 	--no-crg-build) RUN_CRG_BUILD=0 ;;
 	-h | --help)
 		usage
@@ -119,6 +135,12 @@ for arg in "$@"; do
 		;;
 	esac
 done
+
+if [[ -n "$PYTHON_INDEX_URL" ]]; then
+	export UV_DEFAULT_INDEX="$PYTHON_INDEX_URL"
+	export PIP_INDEX_URL="$PYTHON_INDEX_URL"
+	log "Using configured Python package index mirror for uv/pipx installs."
+fi
 
 confirm() {
 	local prompt="$1"
@@ -731,9 +753,12 @@ maybe_install_pipx() {
 }
 
 bootstrap_prereqs() {
-	if [[ "$SKIP_GLOBAL" == "1" ]]; then
+	if [[ "$SKIP_GLOBAL" == "1" && "$FRESH_INSTALL" != "1" ]]; then
 		log "Skipping prerequisite installs (--repo-only/--skip-global)."
 		return 0
+	fi
+	if [[ "$SKIP_GLOBAL" == "1" && "$FRESH_INSTALL" == "1" ]]; then
+		log "Fresh install: checking uv/pipx prerequisites even with --repo-only."
 	fi
 
 	if [[ "$INSTALL_BREW" == "1" || "$INSTALL_PREREQS" == "1" ]]; then
@@ -2856,6 +2881,14 @@ EOF_SUMMARY
 		printf 'PATH fixes needed in future shells:\n'
 		printf '  - %s\n' "${PATH_FIXES[@]}"
 	fi
+
+	if [[ -n "$PYTHON_INDEX_URL" ]]; then
+		printf '\nUse the Python package mirror when running part2:\n'
+		printf '  bash part2.sh --fresh-install --python-index-url=%q\n' "$PYTHON_INDEX_URL"
+		printf '\nIf you need the mirror in this already-open terminal for manual Python package commands, run:\n'
+		printf '  export UV_DEFAULT_INDEX=%q\n' "$PYTHON_INDEX_URL"
+		printf '  export PIP_INDEX_URL=%q\n' "$PYTHON_INDEX_URL"
+	fi
 }
 
 print_quality_install_step() {
@@ -2881,176 +2914,57 @@ EOF_QUALITY_HEADER
 		echo "  - No project manifests or source-file signals found"
 	fi
 
-	cat <<'EOF_QUALITY_INTRO'
+	cat <<EOF_QUALITY_INTRO
 
-1. Install repo quality tools
-   This AI bootstrap only recommends project linters, formatters, type checkers,
-   and test runners. The quality bootstrap can install, wire, and run safe
-   automatic fixes for the detected repo tools.
+1. Run the quality bootstrap
+   part2.sh owns quality-tool installation and wiring. It detects this repo's
+   files first, then asks before installing linting, formatting, and security
+   tools that match those findings.
 
 EOF_QUALITY_INTRO
 
-	if [[ "$has_python" -eq 1 ]]; then
-		cat <<'EOF_QUALITY_PYTHON'
-Python:
-  Install Ruff before running part2.sh so it can wire Python lint/format targets:
-  uv tool install ruff
+	if [[ -n "$PYTHON_INDEX_URL" ]]; then
+		cat <<'EOF_QUALITY_MIRROR'
+   Use the same Python package mirror during quality setup:
+EOF_QUALITY_MIRROR
+		printf '   bash part2.sh --dry-run --fresh-install --python-index-url=%q\n' "$PYTHON_INDEX_URL"
+		printf '   bash part2.sh --fresh-install --python-index-url=%q\n\n' "$PYTHON_INDEX_URL"
 
-  If the repo has a real Python project environment, add project dev tools there:
-    uv add --dev pytest mypy
+	else
+		cat <<'EOF_QUALITY_NO_MIRROR'
+   Preview first:
+   bash part2.sh --dry-run --fresh-install
 
-EOF_QUALITY_PYTHON
+   If the preview is correct, run:
+   bash part2.sh --fresh-install
+
+EOF_QUALITY_NO_MIRROR
 	fi
-
-	if [[ "$has_node" -eq 1 || "$has_angular" -eq 1 ]]; then
-		if [[ "$has_angular" -eq 1 ]]; then
-			echo "Node/Angular:"
-		else
-			echo "Node:"
-		fi
-		cat <<'EOF_QUALITY_NODE'
-  Prefer existing package scripts first:
-    npm run lint
-    npm run typecheck
-    npm test
-
-  If no project choice exists yet, choose and install repo-local web tools:
-    npm install --save-dev --save-exact @biomejs/biome htmlhint
-
-EOF_QUALITY_NODE
-	elif [[ "$has_static_web" -eq 1 ]]; then
-		cat <<'EOF_QUALITY_STATIC'
-JS/TS/HTML/CSS files without package.json:
-  If package.json does not exist yet, create it first:
-    npm init -y
-
-  Then install repo-local web tools:
-    npm install --save-dev --save-exact @biomejs/biome htmlhint
-
-EOF_QUALITY_STATIC
-	fi
-
-	if [[ "$has_php" -eq 1 ]]; then
-		cat <<'EOF_QUALITY_PHP'
-PHP:
-  If composer is missing on macOS, install it first:
-    brew install composer
-
-  Then install repo-local PHP quality tools:
-    composer require --dev squizlabs/php_codesniffer phpstan/phpstan
-
-EOF_QUALITY_PHP
-	fi
-
-	if [[ "$has_shell" -eq 1 ]]; then
-		cat <<EOF_QUALITY_SHELL
-Shell scripts:
-  # Linter/static analyzer:
-  $(if have_cli shellcheck; then printf 'shellcheck is already installed at %s\n' "$(resolve_binary shellcheck)"; else printf 'brew install shellcheck\n'; fi)
-
-  # Formatter:
-  $(if have_cli shfmt; then printf 'shfmt is already installed at %s\n' "$(resolve_binary shfmt)"; else printf 'brew install shfmt\n'; fi)
-
-EOF_QUALITY_SHELL
-	fi
-
-	if [[ "$has_go" -eq 1 ]]; then
-		cat <<'EOF_QUALITY_GO'
-Go:
-  Use the standard Go toolchain:
-    gofmt
-    go vet ./...
-    go test ./...
-
-  Optional stronger linter:
-    staticcheck ./...
-
-EOF_QUALITY_GO
-	fi
-
-	if [[ "$has_rust" -eq 1 ]]; then
-		cat <<'EOF_QUALITY_RUST'
-Rust:
-  Use the standard Rust toolchain:
-    cargo fmt --check
-    cargo clippy --all-targets --all-features -- -D warnings
-    cargo test
-
-EOF_QUALITY_RUST
-	fi
-
-	if [[ "$has_dotnet" -eq 1 ]]; then
-		cat <<'EOF_QUALITY_DOTNET'
-.NET:
-  Use the standard .NET toolchain:
-    dotnet format --verify-no-changes
-    dotnet build
-    dotnet test
-
-EOF_QUALITY_DOTNET
-	fi
-
-	cat <<'EOF_QUALITY_SECURITY'
-Security scanner:
-  If Semgrep is missing on macOS, install it with:
-    brew install semgrep
-
-What those enable:
-EOF_QUALITY_SECURITY
-
-	[[ "$has_python" -eq 1 ]] && echo "  - Ruff: Python linting/formatting"
-	[[ "$has_node" -eq 1 || "$has_angular" -eq 1 || "$has_static_web" -eq 1 ]] && echo "  - Existing npm scripts or Biome/HTMLHint: JavaScript, TypeScript, CSS, JSON, and HTML checks"
-	[[ "$has_php" -eq 1 ]] && echo "  - PHP_CodeSniffer/PHPStan: PHP style and static analysis"
-	[[ "$has_shell" -eq 1 ]] && echo "  - ShellCheck/shfmt: shell script linting/formatting"
-	echo "  - Semgrep: security scanning"
-	echo
 
 	cat <<'EOF_QUALITY_NOTES'
-Install notes:
+Notes:
+  - Do not install Ruff, ShellCheck, shfmt, Semgrep, Biome, HTMLHint, PHP_CodeSniffer,
+    PHPStan, or similar quality tools from part1.
+  - part2.sh installs or wires those only after detecting matching files in this repo.
+  - Use --no-install with part2.sh if you only want recommendations and wiring for
+    tools that are already available.
+
 EOF_QUALITY_NOTES
-
-	[[ "$has_node" -eq 1 || "$has_angular" -eq 1 || "$has_static_web" -eq 1 ]] && echo "  - npm installs web tools as repo-local dev tools and records them in package.json."
-	[[ "$has_php" -eq 1 ]] && echo "  - Composer installs PHPCS/PHPStan as repo-local dev tools under vendor/bin/."
-	if [[ "$has_php" -eq 1 && "$has_shell" -eq 1 ]]; then
-		echo "  - Homebrew installs Composer, ShellCheck, shfmt, and Semgrep as machine-level CLI tools."
-	elif [[ "$has_php" -eq 1 ]]; then
-		echo "  - Homebrew installs Composer and Semgrep as machine-level CLI tools."
-	elif [[ "$has_shell" -eq 1 ]]; then
-		echo "  - Homebrew installs ShellCheck, shfmt, and Semgrep as machine-level CLI tools."
-	else
-		echo "  - Homebrew installs Semgrep as a machine-level CLI tool."
-	fi
-	cat <<'EOF_QUALITY_FOOTER'
-  - To preview install/wire/fix behavior, run: bash part2.sh --dry-run --wire --fix
-  - To do the work interactively, run: bash part2.sh
-  - For non-interactive setup, run: bash part2.sh --yes --wire --fix
-
-EOF_QUALITY_FOOTER
 }
 
 print_next_steps() {
 	cat <<'EOF_NEXT'
 
-2. Run the quality bootstrap
-   Preview the full install/wire/fix flow first:
-   bash part2.sh --dry-run --wire --fix
-
-   If the preview is correct, run it normally and answer the prompts:
-   bash part2.sh
-
-   For non-interactive setup:
-   bash part2.sh --yes --wire --fix
-
-3. Verify the repo quality gate
+2. Verify the repo quality gate
    make edited-ai
    make verify-ai
    ./scripts/agent-verify.sh
 
-4. Populate the repo memory wiki
+3. Populate the repo memory wiki
    make wiki-ai
    Review codebase-wiki/ before relying on generated sections.
 
-5. Trust Codex enforcement hooks
+4. Trust Codex enforcement hooks
    This bootstrap writes project hooks under .codex/ that make Codex run the
    formatter, linter, and typechecker on edited files:
    - PostToolUse for apply_patch/Edit/Write checks each edited file.
@@ -3060,7 +2974,7 @@ print_next_steps() {
    then start a new thread. Codex will skip changed non-managed hooks until
    you trust them.
 
-6. Finish optional Ponytail setup
+5. Finish optional Ponytail setup
 EOF_NEXT
 
 	if ! have codex; then
@@ -3092,11 +3006,11 @@ EOF_PONYTAIL_NOT_CONFIGURED
 	fi
 
 	cat <<'EOF_NEXT'
-7. Context7
+6. Context7
    Run when ready for interactive OAuth/API setup:
    npx ctx7 setup
 
-8. code-review-graph
+7. code-review-graph
 EOF_NEXT
 
 	if have_cli code-review-graph && ! binary_in_active_venv code-review-graph; then
@@ -3119,7 +3033,7 @@ EOF_CRG_MISSING
 	fi
 
 	cat <<'EOF_NEXT'
-9. Codex Git-command blocker
+8. Codex Git-command blocker
    The script searches for ~/.codex/config.toml and can apply the hook when you approve it.
    To apply non-interactively, rerun with --apply-codex-config.
    This blocks Codex Bash calls for git add/commit/push/reset/checkout/etc.
