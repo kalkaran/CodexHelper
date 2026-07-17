@@ -270,7 +270,7 @@ run_semgrep_cli() {
 	[[ -n "$path" ]] || return 127
 	local state_dir=".cache/semgrep"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		state_dir="${TMPDIR:-/tmp}/ai-coding-stack-semgrep-$$"
+		state_dir="${TMPDIR:-/tmp}/ai-quality-semgrep-$$"
 	fi
 	mkdir -p "$state_dir"
 	cert="$(semgrep_cert_file 2>/dev/null || true)"
@@ -1012,93 +1012,112 @@ has_source_file() {
 	[[ -n "$match" ]]
 }
 
-detect_stack() {
-	DETECTED_STACK="unknown"
+detect_file_signals() {
 	PACKAGE_MANAGER=""
-	TEST_CMD=""
-	LINT_CMD=""
-	TYPECHECK_CMD=""
-	BUILD_CMD=""
+	PY_FILES=0
+	PY_NOTEBOOKS=0
+	PY_CONFIGS=0
+	JS_FILES=0
+	JSX_FILES=0
+	TS_FILES=0
+	TSX_FILES=0
+	HTML_FILES=0
+	CSS_FILES=0
+	NODE_MANIFESTS=0
+	ANGULAR_MANIFESTS=0
+	PHP_FILES=0
+	PHP_MANIFESTS=0
+	SHELL_FILES=0
+	GO_FILES=0
+	GO_MANIFESTS=0
+	RUST_FILES=0
+	RUST_MANIFESTS=0
+	DOTNET_FILES=0
+	DOTNET_MANIFESTS=0
+	has_node=0
+	has_angular=0
+	has_python=0
+	has_php=0
+	has_static_web=0
+	has_shell=0
+	has_go=0
+	has_rust=0
+	has_dotnet=0
 
-	if [[ -f package.json ]]; then
-		DETECTED_STACK="node"
+	local path base lower first_line
+	while IFS= read -r -d '' path; do
+		path="${path#./}"
+		base="${path##*/}"
+		lower="${path,,}"
+
+		case "$base" in
+		package.json) NODE_MANIFESTS=$((NODE_MANIFESTS + 1)) ;;
+		angular.json) ANGULAR_MANIFESTS=$((ANGULAR_MANIFESTS + 1)) ;;
+		composer.json) PHP_MANIFESTS=$((PHP_MANIFESTS + 1)) ;;
+		go.mod) GO_MANIFESTS=$((GO_MANIFESTS + 1)) ;;
+		Cargo.toml) RUST_MANIFESTS=$((RUST_MANIFESTS + 1)) ;;
+		pyproject.toml | requirements*.txt | setup.py | setup.cfg | Pipfile | poetry.lock | uv.lock | ruff.toml | .ruff.toml | mypy.ini | pyrightconfig.json)
+			PY_CONFIGS=$((PY_CONFIGS + 1))
+			;;
+		esac
+
+		case "$lower" in
+		*.py) PY_FILES=$((PY_FILES + 1)) ;;
+		*.ipynb) PY_NOTEBOOKS=$((PY_NOTEBOOKS + 1)) ;;
+		*.js) JS_FILES=$((JS_FILES + 1)) ;;
+		*.jsx) JSX_FILES=$((JSX_FILES + 1)) ;;
+		*.ts) TS_FILES=$((TS_FILES + 1)) ;;
+		*.tsx) TSX_FILES=$((TSX_FILES + 1)) ;;
+		*.html | *.htm) HTML_FILES=$((HTML_FILES + 1)) ;;
+		*.css) CSS_FILES=$((CSS_FILES + 1)) ;;
+		*.php) PHP_FILES=$((PHP_FILES + 1)) ;;
+		*.sh | *.bash | *.zsh) SHELL_FILES=$((SHELL_FILES + 1)) ;;
+		*.go) GO_FILES=$((GO_FILES + 1)) ;;
+		*.rs) RUST_FILES=$((RUST_FILES + 1)) ;;
+		*.cs) DOTNET_FILES=$((DOTNET_FILES + 1)) ;;
+		*.csproj | *.sln) DOTNET_MANIFESTS=$((DOTNET_MANIFESTS + 1)) ;;
+		*)
+			if [[ -x "$path" && "$base" != *.* ]]; then
+				first_line="$(sed -n '1p' "$path" 2>/dev/null || true)"
+				case "$first_line" in
+				'#!'*sh | '#!'*bash | '#!'*zsh) SHELL_FILES=$((SHELL_FILES + 1)) ;;
+				esac
+			fi
+			;;
+		esac
+	done < <(find . \
+		\( -name '.git' \
+		-o -name 'node_modules' \
+		-o -name 'vendor' \
+		-o -name 'dist' \
+		-o -name 'build' \
+		-o -name 'coverage' \
+		-o -name '.cache' \
+		-o -name '.venv' \
+		-o -name '__pycache__' \
+		-o -name '.mypy_cache' \
+		-o -name '.pytest_cache' \
+		-o -name '.ruff_cache' \
+		-o -name 'obsidian' \) -prune \
+		-o -type f -print0 2>/dev/null)
+
+	if [[ "$NODE_MANIFESTS" -gt 0 ]]; then
+		has_node=1
 		if [[ -f pnpm-lock.yaml ]] && have pnpm; then
 			PACKAGE_MANAGER="pnpm"
 		elif [[ -f yarn.lock ]] && have yarn; then
 			PACKAGE_MANAGER="yarn"
 		else PACKAGE_MANAGER="npm"; fi
-
-		TEST_CMD="$PACKAGE_MANAGER test -- --runInBand"
-		LINT_CMD="$PACKAGE_MANAGER run lint"
-		TYPECHECK_CMD="$PACKAGE_MANAGER run typecheck"
-		BUILD_CMD="$PACKAGE_MANAGER run build"
 	fi
-
-	if [[ -f pyproject.toml || -f requirements.txt || -f setup.py ]]; then
-		if [[ "$DETECTED_STACK" == "node" ]]; then
-			DETECTED_STACK="python+node"
-		else
-			DETECTED_STACK="python"
-		fi
-		# Keep these broadly useful and non-destructive; commands skip if tools are missing.
-		TEST_CMD="pytest -q"
-		LINT_CMD="ruff check ."
-		TYPECHECK_CMD="mypy . || pyright ."
-		BUILD_CMD="python -m compileall ."
-	fi
-
-	if [[ -f composer.json ]] || has_source_file -name '*.php' || has_source_file \( -name '*.html' -o -name '*.js' -o -name '*.css' \); then
-		if [[ "$DETECTED_STACK" == "node" ]]; then
-			DETECTED_STACK="php-static+node"
-		else
-			DETECTED_STACK="php-static"
-		fi
-		# shellcheck disable=SC2016
-		TEST_CMD='if ls tests/*.js >/dev/null 2>&1; then for f in tests/*.js; do node "$f"; done; else echo "No JS test files configured yet."; fi'
-		LINT_CMD='find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o -name "*.php" -print0 | xargs -0 -n1 php -l; if [ -x vendor/bin/phpcs ]; then vendor/bin/phpcs --standard=PSR12 --extensions=php --ignore=vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/* .; else echo "vendor/bin/phpcs not installed; skipping PHPCS"; fi; command -v biome >/dev/null 2>&1 && biome check . || echo "biome not installed; skipping web lint"; command -v htmlhint >/dev/null 2>&1 && htmlhint --ignore "**/.git/**,**/node_modules/**,**/vendor/**,**/dist/**,**/build/**,**/coverage/**,**/.cache/**,**/.venv/**" "**/*.html" || echo "htmlhint not installed; skipping HTML lint"'
-		TYPECHECK_CMD='if [ -x vendor/bin/phpstan ]; then find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o -name "*.php" -print0 | xargs -0 vendor/bin/phpstan analyse --memory-limit=1G --no-progress --; else echo "vendor/bin/phpstan not installed; skipping PHPStan"; fi'
-		BUILD_CMD='@echo "No build step for PHP/static site."'
-	fi
-
-	if has_source_file \( -name '*.sh' -o -name '*.bash' -o -name '*.zsh' \); then
-		if [[ "$DETECTED_STACK" == "unknown" ]]; then
-			DETECTED_STACK="shell"
-			TEST_CMD='@echo "No shell test runner configured yet."'
-			LINT_CMD='if command -v shellcheck >/dev/null 2>&1; then find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o \( -name "*.sh" -o -name "*.bash" -o -name "*.zsh" \) -print0 | xargs -0 shellcheck; else echo "shellcheck not installed; run part2.sh to install/wire shell checks"; fi'
-			TYPECHECK_CMD='@echo "No separate typecheck step for shell scripts."'
-			BUILD_CMD='@echo "No build step for shell scripts."'
-		fi
-	fi
-
-	if [[ -f go.mod ]]; then
-		DETECTED_STACK="go"
-		TEST_CMD="go test ./..."
-		LINT_CMD="go vet ./..."
-		TYPECHECK_CMD="go test ./..."
-		BUILD_CMD="go build ./..."
-	fi
-
-	if [[ -f Cargo.toml ]]; then
-		DETECTED_STACK="rust"
-		TEST_CMD="cargo test"
-		LINT_CMD="cargo clippy --all-targets --all-features -- -D warnings"
-		TYPECHECK_CMD="cargo check"
-		BUILD_CMD="cargo build"
-	fi
-
-	if compgen -G "*.sln" >/dev/null || compgen -G "*.csproj" >/dev/null; then
-		DETECTED_STACK="dotnet"
-		# shellcheck disable=SC2034
-		TEST_CMD="dotnet test"
-		# shellcheck disable=SC2034
-		LINT_CMD="dotnet format --verify-no-changes"
-		# shellcheck disable=SC2034
-		TYPECHECK_CMD="dotnet build"
-		# shellcheck disable=SC2034
-		BUILD_CMD="dotnet build"
-	fi
-
-	log "Detected stack: $DETECTED_STACK"
+	[[ "$ANGULAR_MANIFESTS" -gt 0 ]] && has_angular=1
+	[[ "$PY_FILES" -gt 0 || "$PY_NOTEBOOKS" -gt 0 || "$PY_CONFIGS" -gt 0 ]] && has_python=1
+	[[ "$PHP_FILES" -gt 0 || "$PHP_MANIFESTS" -gt 0 ]] && has_php=1
+	[[ "$HTML_FILES" -gt 0 || "$CSS_FILES" -gt 0 || "$JS_FILES" -gt 0 || "$JSX_FILES" -gt 0 || "$TS_FILES" -gt 0 || "$TSX_FILES" -gt 0 ]] && has_static_web=1
+	[[ "$SHELL_FILES" -gt 0 ]] && has_shell=1
+	[[ "$GO_FILES" -gt 0 || "$GO_MANIFESTS" -gt 0 ]] && has_go=1
+	[[ "$RUST_FILES" -gt 0 || "$RUST_MANIFESTS" -gt 0 ]] && has_rust=1
+	[[ "$DOTNET_FILES" -gt 0 || "$DOTNET_MANIFESTS" -gt 0 ]] && has_dotnet=1
+	return 0
 }
 
 create_agent_files() {
@@ -1428,10 +1447,10 @@ ensure_cache_gitignored() {
 
 create_makefile() {
 	log "Creating or updating Makefile targets"
-	detect_stack
+	detect_file_signals
 
-	local marker="# >>> ai-coding-stack targets >>>"
-	local endmarker="# <<< ai-coding-stack targets <<<"
+	local marker="# >>> ai-quality targets >>>"
+	local endmarker="# <<< ai-quality targets <<<"
 
 	local setup_cmd='@echo "No setup command configured yet."'
 	local lint_cmd='@echo "No lint command configured yet."'
@@ -1440,51 +1459,71 @@ create_makefile() {
 	# shellcheck disable=SC2016
 	local security_cmd='mkdir -p .cache/semgrep; cert=""; for p in /opt/homebrew/etc/ca-certificates/cert.pem /usr/local/etc/ca-certificates/cert.pem /opt/homebrew/etc/openssl@3/cert.pem /usr/local/etc/openssl@3/cert.pem; do [ -r "$$p" ] && cert="$$p" && break; done; if command -v semgrep >/dev/null 2>&1; then if [ -n "$$cert" ]; then SSL_CERT_FILE="$$cert" SEMGREP_LOG_FILE=.cache/semgrep/semgrep.log SEMGREP_SETTINGS_FILE=.cache/semgrep/settings.yml SEMGREP_VERSION_CACHE_PATH=.cache/semgrep/version-cache semgrep --version >/dev/null 2>&1 && SSL_CERT_FILE="$$cert" SEMGREP_LOG_FILE=.cache/semgrep/semgrep.log SEMGREP_SETTINGS_FILE=.cache/semgrep/settings.yml SEMGREP_VERSION_CACHE_PATH=.cache/semgrep/version-cache semgrep scan || echo "semgrep unavailable or failing; skipping security scan"; else SEMGREP_LOG_FILE=.cache/semgrep/semgrep.log SEMGREP_SETTINGS_FILE=.cache/semgrep/settings.yml SEMGREP_VERSION_CACHE_PATH=.cache/semgrep/version-cache semgrep --version >/dev/null 2>&1 && SEMGREP_LOG_FILE=.cache/semgrep/semgrep.log SEMGREP_SETTINGS_FILE=.cache/semgrep/settings.yml SEMGREP_VERSION_CACHE_PATH=.cache/semgrep/version-cache semgrep scan || echo "semgrep unavailable or failing; skipping security scan"; fi; else echo "semgrep not installed; skipping security scan"; fi'
 
-	case "$DETECTED_STACK" in
-	node)
-		setup_cmd='npm install'
-		lint_cmd='npm run lint --if-present'
-		typecheck_cmd='npm run typecheck --if-present'
-		test_cmd='npm test --if-present'
-		;;
-	python)
-		setup_cmd='@echo "Install project dependencies using your preferred tool: uv, poetry, pip, or pip-tools."'
-		lint_cmd='command -v ruff >/dev/null 2>&1 && ruff check . || echo "ruff not installed; skipping lint"'
-		typecheck_cmd='command -v mypy >/dev/null 2>&1 && mypy . || command -v pyright >/dev/null 2>&1 && pyright . || echo "mypy/pyright not installed; skipping typecheck"'
-		test_cmd='command -v pytest >/dev/null 2>&1 && pytest -q || echo "pytest not installed; skipping tests"'
-		;;
-	python+node)
-		setup_cmd='@echo "Install Python and Node dependencies using the project package managers."'
-		lint_cmd='command -v ruff >/dev/null 2>&1 && ruff check . || true; npm run lint --if-present'
-		typecheck_cmd='(command -v mypy >/dev/null 2>&1 && mypy . || command -v pyright >/dev/null 2>&1 && pyright . || true); npm run typecheck --if-present'
-		test_cmd='(command -v pytest >/dev/null 2>&1 && pytest -q || true); npm test --if-present'
-		;;
-	php-static | php-static+node)
-		setup_cmd='command -v composer >/dev/null 2>&1 && [ -f composer.json ] && composer install || echo "composer not installed or composer.json missing; skipping PHP dependency install"'
-		lint_cmd='find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o -name "*.php" -print0 | xargs -0 -n1 php -l; if [ -x vendor/bin/phpcs ]; then vendor/bin/phpcs --standard=PSR12 --extensions=php --ignore=vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/* .; else echo "vendor/bin/phpcs not installed; skipping PHPCS"; fi; command -v biome >/dev/null 2>&1 && biome check . || echo "biome not installed; skipping web lint"; command -v htmlhint >/dev/null 2>&1 && htmlhint --ignore "**/.git/**,**/node_modules/**,**/vendor/**,**/dist/**,**/build/**,**/coverage/**,**/.cache/**,**/.venv/**" "**/*.html" || echo "htmlhint not installed; skipping HTML lint"'
-		typecheck_cmd='if [ -x vendor/bin/phpstan ]; then find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o -name "*.php" -print0 | xargs -0 vendor/bin/phpstan analyse --memory-limit=1G --no-progress --; else echo "vendor/bin/phpstan not installed; skipping PHPStan"; fi'
-		# shellcheck disable=SC2016
-		test_cmd='if ls tests/*.js >/dev/null 2>&1; then for f in tests/*.js; do node "$$f"; done; else echo "No JS test files configured yet."; fi'
-		;;
-	go)
-		setup_cmd='go mod download'
-		lint_cmd='go vet ./...'
-		typecheck_cmd='go test ./...'
-		test_cmd='go test ./...'
-		;;
-	rust)
-		setup_cmd='cargo fetch'
-		lint_cmd='cargo clippy --all-targets --all-features -- -D warnings'
-		typecheck_cmd='cargo check'
-		test_cmd='cargo test'
-		;;
-	dotnet)
-		setup_cmd='dotnet restore'
-		lint_cmd='dotnet format --verify-no-changes'
-		typecheck_cmd='dotnet build'
-		test_cmd='dotnet test'
-		;;
-	esac
+	local -a setup_parts=()
+	local -a lint_parts=()
+	local -a typecheck_parts=()
+	local -a test_parts=()
+	if [[ "$has_python" -eq 1 ]]; then
+		setup_parts+=('@echo "Install Python dependencies using the project package manager: uv, poetry, pip, or pip-tools."')
+		lint_parts+=('command -v ruff >/dev/null 2>&1 && ruff check . || echo "ruff not installed; skipping Python lint"')
+		typecheck_parts+=('command -v mypy >/dev/null 2>&1 && mypy . || command -v pyright >/dev/null 2>&1 && pyright . || echo "mypy/pyright not installed; skipping Python typecheck"')
+		test_parts+=('command -v pytest >/dev/null 2>&1 && pytest -q || echo "pytest not installed; skipping Python tests"')
+	fi
+	if [[ "$has_node" -eq 1 ]]; then
+		setup_parts+=('npm install')
+		lint_parts+=('npm run lint --if-present')
+		typecheck_parts+=('npm run typecheck --if-present')
+		test_parts+=('npm test --if-present')
+	elif [[ "$has_static_web" -eq 1 ]]; then
+		lint_parts+=('command -v biome >/dev/null 2>&1 && biome check . || echo "biome not installed; skipping web lint"')
+	fi
+	if [[ "$HTML_FILES" -gt 0 ]]; then
+		lint_parts+=('command -v htmlhint >/dev/null 2>&1 && htmlhint --ignore "**/.git/**,**/node_modules/**,**/vendor/**,**/dist/**,**/build/**,**/coverage/**,**/.cache/**,**/.venv/**" "**/*.html" || echo "htmlhint not installed; skipping HTML lint"')
+	fi
+	if [[ "$has_php" -eq 1 ]]; then
+		setup_parts+=('command -v composer >/dev/null 2>&1 && [ -f composer.json ] && composer install || echo "composer not installed or composer.json missing; skipping PHP dependency install"')
+		lint_parts+=('if command -v php >/dev/null 2>&1; then find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o -name "*.php" -print0 | xargs -0 -n1 php -l; else echo "php not installed; skipping PHP syntax lint"; fi')
+		lint_parts+=('if [ -x vendor/bin/phpcs ]; then vendor/bin/phpcs --standard=PSR12 --extensions=php --ignore=vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/* .; else echo "vendor/bin/phpcs not installed; skipping PHPCS"; fi')
+		typecheck_parts+=('if [ -x vendor/bin/phpstan ]; then find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o -name "*.php" -print0 | xargs -0 vendor/bin/phpstan analyse --memory-limit=1G --no-progress --; else echo "vendor/bin/phpstan not installed; skipping PHPStan"; fi')
+	fi
+	if [[ "$has_shell" -eq 1 ]]; then
+		lint_parts+=('if command -v shellcheck >/dev/null 2>&1; then find . \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name coverage -o -name .git -o -name .cache -o -name .venv \) -prune -o \( -name "*.sh" -o -name "*.bash" -o -name "*.zsh" \) -print0 | xargs -0 shellcheck; else echo "shellcheck not installed; skipping shell lint"; fi')
+	fi
+	if [[ "$has_go" -eq 1 ]]; then
+		setup_parts+=('go mod download')
+		lint_parts+=('go vet ./...')
+		typecheck_parts+=('go test ./...')
+		test_parts+=('go test ./...')
+	fi
+	if [[ "$has_rust" -eq 1 ]]; then
+		setup_parts+=('cargo fetch')
+		lint_parts+=('cargo clippy --all-targets --all-features -- -D warnings')
+		typecheck_parts+=('cargo check')
+		test_parts+=('cargo test')
+	fi
+	if [[ "$has_dotnet" -eq 1 ]]; then
+		setup_parts+=('dotnet restore')
+		lint_parts+=('dotnet format --verify-no-changes')
+		typecheck_parts+=('dotnet build')
+		test_parts+=('dotnet test')
+	fi
+
+	join_make_cmds() {
+		if [[ "$#" -eq 0 ]]; then
+			return 1
+		fi
+		local joined="$1"
+		shift
+		local part
+		for part in "$@"; do
+			joined="$joined; $part"
+		done
+		printf '%s\n' "$joined"
+	}
+	[[ "${#setup_parts[@]}" -gt 0 ]] && setup_cmd="$(join_make_cmds "${setup_parts[@]}")"
+	[[ "${#lint_parts[@]}" -gt 0 ]] && lint_cmd="$(join_make_cmds "${lint_parts[@]}")"
+	[[ "${#typecheck_parts[@]}" -gt 0 ]] && typecheck_cmd="$(join_make_cmds "${typecheck_parts[@]}")"
+	[[ "${#test_parts[@]}" -gt 0 ]] && test_cmd="$(join_make_cmds "${test_parts[@]}")"
 
 	local block
 	block=$(
@@ -2693,8 +2732,8 @@ import sys
 
 config_path = pathlib.Path(sys.argv[1]).expanduser()
 hook_path = pathlib.Path(sys.argv[2]).expanduser()
-marker_start = "# >>> ai-coding-stack codex git blocker"
-marker_end = "# <<< ai-coding-stack codex git blocker"
+marker_start = "# >>> ai-quality codex git blocker"
+marker_end = "# <<< ai-quality codex git blocker"
 
 config_path.parent.mkdir(parents=True, exist_ok=True)
 text = config_path.read_text() if config_path.exists() else ""
@@ -2820,95 +2859,40 @@ EOF_SUMMARY
 }
 
 print_quality_install_step() {
-	detect_stack
+	detect_file_signals
 
 	cat <<EOF_QUALITY_HEADER
 
 Next manual steps
 =================
 
-Detected stack: $DETECTED_STACK
+Detected file signals:
+EOF_QUALITY_HEADER
+
+	[[ "$has_python" -eq 1 ]] && echo "  - Python: $PY_FILES .py, $PY_NOTEBOOKS .ipynb, $PY_CONFIGS config/manifest files"
+	[[ "$has_node" -eq 1 || "$has_angular" -eq 1 || "$JS_FILES" -gt 0 || "$JSX_FILES" -gt 0 || "$TS_FILES" -gt 0 || "$TSX_FILES" -gt 0 ]] && echo "  - Node/JS/TS: $NODE_MANIFESTS package.json, $ANGULAR_MANIFESTS angular.json, $JS_FILES .js, $JSX_FILES .jsx, $TS_FILES .ts, $TSX_FILES .tsx"
+	[[ "$HTML_FILES" -gt 0 || "$CSS_FILES" -gt 0 ]] && echo "  - Web markup/styles: $HTML_FILES HTML, $CSS_FILES CSS"
+	[[ "$has_php" -eq 1 ]] && echo "  - PHP: $PHP_FILES .php, $PHP_MANIFESTS composer.json"
+	[[ "$has_shell" -eq 1 ]] && echo "  - Shell: $SHELL_FILES shell scripts"
+	[[ "$has_go" -eq 1 ]] && echo "  - Go: $GO_FILES .go, $GO_MANIFESTS go.mod"
+	[[ "$has_rust" -eq 1 ]] && echo "  - Rust: $RUST_FILES .rs, $RUST_MANIFESTS Cargo.toml"
+	[[ "$has_dotnet" -eq 1 ]] && echo "  - .NET: $DOTNET_FILES .cs, $DOTNET_MANIFESTS project/solution files"
+	if [[ "$has_python" -eq 0 && "$has_node" -eq 0 && "$has_angular" -eq 0 && "$has_static_web" -eq 0 && "$has_php" -eq 0 && "$has_shell" -eq 0 && "$has_go" -eq 0 && "$has_rust" -eq 0 && "$has_dotnet" -eq 0 ]]; then
+		echo "  - No project manifests or source-file signals found"
+	fi
+
+	cat <<'EOF_QUALITY_INTRO'
 
 1. Install repo quality tools
    This AI bootstrap only recommends project linters, formatters, type checkers,
    and test runners. The quality bootstrap can install, wire, and run safe
    automatic fixes for the detected repo tools.
 
-EOF_QUALITY_HEADER
+EOF_QUALITY_INTRO
 
-	case "$DETECTED_STACK" in
-	shell)
-		cat <<EOF_QUALITY_SHELL
-For this shell script repo:
-  # Linter/static analyzer:
-  $(if have_cli shellcheck; then printf 'shellcheck is already installed at %s\n' "$(resolve_binary shellcheck)"; else printf 'brew install shellcheck\n'; fi)
-
-  # Formatter:
-  $(if have_cli shfmt; then printf 'shfmt is already installed at %s\n' "$(resolve_binary shfmt)"; else printf 'brew install shfmt\n'; fi)
-
-What those enable:
-  - ShellCheck: shell script linting/static analysis
-  - shfmt: shell script formatting
-
-Install notes:
-  - Homebrew installs ShellCheck/shfmt as machine-level CLI tools.
-  - To preview install/wire/fix behavior, run: bash part2.sh --dry-run --wire --fix
-  - To do the work interactively, run: bash part2.sh
-  - For non-interactive setup, run: bash part2.sh --yes --wire --fix
-
-EOF_QUALITY_SHELL
-		;;
-	php-static | php-static+node)
-		cat <<'EOF_QUALITY_PHP_STATIC'
-For this PHP/static HTML/CSS/JS repo:
-  # JavaScript/CSS/JSON and HTML:
-  # If package.json does not exist yet, create it first with: npm init -y
-  npm install --save-dev --save-exact @biomejs/biome htmlhint
-
-  # PHP:
-  # If composer is missing on macOS, install it first with: brew install composer
-  composer require --dev squizlabs/php_codesniffer phpstan/phpstan
-
-  # Shell scripts:
-  brew install shellcheck shfmt
-
-  # Security scanner:
-  # If semgrep is missing on macOS, install it with: brew install semgrep
-
-What those enable:
-  - Biome: JavaScript linting/formatting, plus CSS/JSON formatting/checks
-  - HTMLHint: HTML linting
-  - PHP_CodeSniffer: PHP style checks
-  - PHPStan: PHP static analysis/type checks
-  - ShellCheck/shfmt: shell script linting/formatting
-  - Semgrep: security scanning
-
-Install notes:
-  - npm installs Biome/HTMLHint as repo-local dev tools and records them in package.json.
-  - Composer installs PHPCS/PHPStan as repo-local dev tools under vendor/bin/.
-  - Homebrew installs ShellCheck/shfmt and Semgrep as machine-level CLI tools.
-  - To preview install/wire/fix behavior, run: bash part2.sh --dry-run --wire --fix
-  - To do the work interactively, run: bash part2.sh
-  - For non-interactive setup, run: bash part2.sh --yes --wire --fix
-
-EOF_QUALITY_PHP_STATIC
-		;;
-	node)
-		cat <<'EOF_QUALITY_NODE'
-For this Node repo:
-  Prefer existing package scripts first:
-    npm run lint
-    npm run typecheck
-    npm test
-
-  If no project choice exists yet, choose and install a linter/formatter such as:
-    npm install --save-dev --save-exact @biomejs/biome
-
-EOF_QUALITY_NODE
-		;;
-	python)
+	if [[ "$has_python" -eq 1 ]]; then
 		cat <<'EOF_QUALITY_PYTHON'
-For this Python repo:
+Python:
   Install Ruff before running part2.sh so it can wire Python lint/format targets:
   uv tool install ruff
 
@@ -2916,21 +2900,63 @@ For this Python repo:
     uv add --dev pytest mypy
 
 EOF_QUALITY_PYTHON
-		;;
-	python+node)
-		cat <<'EOF_QUALITY_PY_NODE'
-For this Python + Node repo:
-  Prefer existing package/project scripts first.
-  Common starting point:
-    # Install before running part2.sh so it can wire Python lint/format targets.
-    uv tool install ruff
-    npm install --save-dev --save-exact @biomejs/biome
+	fi
 
-EOF_QUALITY_PY_NODE
-		;;
-	go)
+	if [[ "$has_node" -eq 1 || "$has_angular" -eq 1 ]]; then
+		if [[ "$has_angular" -eq 1 ]]; then
+			echo "Node/Angular:"
+		else
+			echo "Node:"
+		fi
+		cat <<'EOF_QUALITY_NODE'
+  Prefer existing package scripts first:
+    npm run lint
+    npm run typecheck
+    npm test
+
+  If no project choice exists yet, choose and install repo-local web tools:
+    npm install --save-dev --save-exact @biomejs/biome htmlhint
+
+EOF_QUALITY_NODE
+	elif [[ "$has_static_web" -eq 1 ]]; then
+		cat <<'EOF_QUALITY_STATIC'
+JS/TS/HTML/CSS files without package.json:
+  If package.json does not exist yet, create it first:
+    npm init -y
+
+  Then install repo-local web tools:
+    npm install --save-dev --save-exact @biomejs/biome htmlhint
+
+EOF_QUALITY_STATIC
+	fi
+
+	if [[ "$has_php" -eq 1 ]]; then
+		cat <<'EOF_QUALITY_PHP'
+PHP:
+  If composer is missing on macOS, install it first:
+    brew install composer
+
+  Then install repo-local PHP quality tools:
+    composer require --dev squizlabs/php_codesniffer phpstan/phpstan
+
+EOF_QUALITY_PHP
+	fi
+
+	if [[ "$has_shell" -eq 1 ]]; then
+		cat <<EOF_QUALITY_SHELL
+Shell scripts:
+  # Linter/static analyzer:
+  $(if have_cli shellcheck; then printf 'shellcheck is already installed at %s\n' "$(resolve_binary shellcheck)"; else printf 'brew install shellcheck\n'; fi)
+
+  # Formatter:
+  $(if have_cli shfmt; then printf 'shfmt is already installed at %s\n' "$(resolve_binary shfmt)"; else printf 'brew install shfmt\n'; fi)
+
+EOF_QUALITY_SHELL
+	fi
+
+	if [[ "$has_go" -eq 1 ]]; then
 		cat <<'EOF_QUALITY_GO'
-For this Go repo:
+Go:
   Use the standard Go toolchain:
     gofmt
     go vet ./...
@@ -2940,35 +2966,66 @@ For this Go repo:
     staticcheck ./...
 
 EOF_QUALITY_GO
-		;;
-	rust)
+	fi
+
+	if [[ "$has_rust" -eq 1 ]]; then
 		cat <<'EOF_QUALITY_RUST'
-For this Rust repo:
+Rust:
   Use the standard Rust toolchain:
     cargo fmt --check
     cargo clippy --all-targets --all-features -- -D warnings
     cargo test
 
 EOF_QUALITY_RUST
-		;;
-	dotnet)
+	fi
+
+	if [[ "$has_dotnet" -eq 1 ]]; then
 		cat <<'EOF_QUALITY_DOTNET'
-For this .NET repo:
+.NET:
   Use the standard .NET toolchain:
     dotnet format --verify-no-changes
     dotnet build
     dotnet test
 
 EOF_QUALITY_DOTNET
-		;;
-	*)
-		cat <<'EOF_QUALITY_UNKNOWN'
-No specific stack recommendation was selected. Count file extensions and check
-manifest files, then install the matching quality tools before wiring checks.
+	fi
 
-EOF_QUALITY_UNKNOWN
-		;;
-	esac
+	cat <<'EOF_QUALITY_SECURITY'
+Security scanner:
+  If Semgrep is missing on macOS, install it with:
+    brew install semgrep
+
+What those enable:
+EOF_QUALITY_SECURITY
+
+	[[ "$has_python" -eq 1 ]] && echo "  - Ruff: Python linting/formatting"
+	[[ "$has_node" -eq 1 || "$has_angular" -eq 1 || "$has_static_web" -eq 1 ]] && echo "  - Existing npm scripts or Biome/HTMLHint: JavaScript, TypeScript, CSS, JSON, and HTML checks"
+	[[ "$has_php" -eq 1 ]] && echo "  - PHP_CodeSniffer/PHPStan: PHP style and static analysis"
+	[[ "$has_shell" -eq 1 ]] && echo "  - ShellCheck/shfmt: shell script linting/formatting"
+	echo "  - Semgrep: security scanning"
+	echo
+
+	cat <<'EOF_QUALITY_NOTES'
+Install notes:
+EOF_QUALITY_NOTES
+
+	[[ "$has_node" -eq 1 || "$has_angular" -eq 1 || "$has_static_web" -eq 1 ]] && echo "  - npm installs web tools as repo-local dev tools and records them in package.json."
+	[[ "$has_php" -eq 1 ]] && echo "  - Composer installs PHPCS/PHPStan as repo-local dev tools under vendor/bin/."
+	if [[ "$has_php" -eq 1 && "$has_shell" -eq 1 ]]; then
+		echo "  - Homebrew installs Composer, ShellCheck, shfmt, and Semgrep as machine-level CLI tools."
+	elif [[ "$has_php" -eq 1 ]]; then
+		echo "  - Homebrew installs Composer and Semgrep as machine-level CLI tools."
+	elif [[ "$has_shell" -eq 1 ]]; then
+		echo "  - Homebrew installs ShellCheck, shfmt, and Semgrep as machine-level CLI tools."
+	else
+		echo "  - Homebrew installs Semgrep as a machine-level CLI tool."
+	fi
+	cat <<'EOF_QUALITY_FOOTER'
+  - To preview install/wire/fix behavior, run: bash part2.sh --dry-run --wire --fix
+  - To do the work interactively, run: bash part2.sh
+  - For non-interactive setup, run: bash part2.sh --yes --wire --fix
+
+EOF_QUALITY_FOOTER
 }
 
 print_next_steps() {

@@ -312,6 +312,15 @@ install_missing_quality_tools() {
 		return 0
 	fi
 
+	if [[ "$PYTHON" -eq 1 ]] && ! cmd_exists ruff; then
+		if cmd_exists uv && should_install "Install Ruff with uv?"; then
+			run_install "Ruff" uv tool install ruff || warn "Ruff install failed."
+			ensure_user_tool_path
+		else
+			warn "ruff missing; install it with: uv tool install ruff"
+		fi
+	fi
+
 	local need_node_tools=0
 	if [[ "$STATIC_WEB" -eq 1 || "$NODE_PKG" -eq 1 || "$TS" -eq 1 ]]; then
 		if ! local_bin_exists biome || ! local_bin_exists htmlhint; then
@@ -367,71 +376,123 @@ install_missing_quality_tools() {
 }
 
 # Language/project detection
-PYTHON=0
-PYTHON_STRONG=0
-NODE_PKG=0
-STATIC_WEB=0
-PHP_LANG=0
-TS=0
-SHELL_LANG=0
-GO_LANG=0
-RUST_LANG=0
-DOTNET=0
-UNKNOWN=1
+detect_file_signals() {
+	PYTHON=0
+	NODE_PKG=0
+	STATIC_WEB=0
+	PHP_LANG=0
+	TS=0
+	SHELL_LANG=0
+	GO_LANG=0
+	RUST_LANG=0
+	DOTNET=0
+	UNKNOWN=1
+	PY_FILES=0
+	PY_NOTEBOOKS=0
+	PY_CONFIGS=0
+	JS_FILES=0
+	JSX_FILES=0
+	TS_FILES=0
+	TSX_FILES=0
+	HTML_FILES=0
+	CSS_FILES=0
+	NODE_MANIFESTS=0
+	ANGULAR_MANIFESTS=0
+	PHP_FILES=0
+	PHP_MANIFESTS=0
+	SHELL_FILES=0
+	GO_FILES=0
+	GO_MANIFESTS=0
+	RUST_FILES=0
+	RUST_MANIFESTS=0
+	DOTNET_FILES=0
+	DOTNET_MANIFESTS=0
 
-if has_file pyproject.toml || has_file requirements.txt || has_file setup.py || has_file setup.cfg || has_file Pipfile || has_file poetry.lock || has_file uv.lock || has_file ruff.toml || has_file .ruff.toml || has_file mypy.ini || has_file pyrightconfig.json; then
-	PYTHON_STRONG=1
-fi
-if [[ "$PYTHON_STRONG" -eq 1 ]] || has_any \( -name '*.py' -o -name 'manage.py' \); then
-	PYTHON=1
-	UNKNOWN=0
-fi
-if has_file package.json; then
-	NODE_PKG=1
-	UNKNOWN=0
-fi
-if has_any \( -name '*.ts' -o -name '*.tsx' \); then
-	TS=1
-	UNKNOWN=0
-fi
-if has_any \( -name '*.html' -o -name '*.js' -o -name '*.css' \); then
-	STATIC_WEB=1
-	UNKNOWN=0
-fi
-if has_file composer.json || has_any -name '*.php'; then
-	PHP_LANG=1
-	UNKNOWN=0
-fi
-if has_any -name '*.sh'; then
-	SHELL_LANG=1
-	UNKNOWN=0
-fi
-if has_file go.mod || has_any -name '*.go'; then
-	GO_LANG=1
-	UNKNOWN=0
-fi
-if has_file Cargo.toml || has_any -name '*.rs'; then
-	RUST_LANG=1
-	UNKNOWN=0
-fi
-if has_any \( -name '*.csproj' -o -name '*.sln' \); then
-	DOTNET=1
-	UNKNOWN=0
-fi
+	local path base lower first_line
+	while IFS= read -r -d '' path; do
+		path="${path#./}"
+		base="${path##*/}"
+		lower="${path,,}"
+
+		case "$base" in
+		package.json) NODE_MANIFESTS=$((NODE_MANIFESTS + 1)) ;;
+		angular.json) ANGULAR_MANIFESTS=$((ANGULAR_MANIFESTS + 1)) ;;
+		composer.json) PHP_MANIFESTS=$((PHP_MANIFESTS + 1)) ;;
+		go.mod) GO_MANIFESTS=$((GO_MANIFESTS + 1)) ;;
+		Cargo.toml) RUST_MANIFESTS=$((RUST_MANIFESTS + 1)) ;;
+		pyproject.toml | requirements*.txt | setup.py | setup.cfg | Pipfile | poetry.lock | uv.lock | ruff.toml | .ruff.toml | mypy.ini | pyrightconfig.json)
+			PY_CONFIGS=$((PY_CONFIGS + 1))
+			;;
+		esac
+
+		case "$lower" in
+		*.py) PY_FILES=$((PY_FILES + 1)) ;;
+		*.ipynb) PY_NOTEBOOKS=$((PY_NOTEBOOKS + 1)) ;;
+		*.js) JS_FILES=$((JS_FILES + 1)) ;;
+		*.jsx) JSX_FILES=$((JSX_FILES + 1)) ;;
+		*.ts) TS_FILES=$((TS_FILES + 1)) ;;
+		*.tsx) TSX_FILES=$((TSX_FILES + 1)) ;;
+		*.html | *.htm) HTML_FILES=$((HTML_FILES + 1)) ;;
+		*.css) CSS_FILES=$((CSS_FILES + 1)) ;;
+		*.php) PHP_FILES=$((PHP_FILES + 1)) ;;
+		*.sh | *.bash | *.zsh) SHELL_FILES=$((SHELL_FILES + 1)) ;;
+		*.go) GO_FILES=$((GO_FILES + 1)) ;;
+		*.rs) RUST_FILES=$((RUST_FILES + 1)) ;;
+		*.cs) DOTNET_FILES=$((DOTNET_FILES + 1)) ;;
+		*.csproj | *.sln) DOTNET_MANIFESTS=$((DOTNET_MANIFESTS + 1)) ;;
+		*)
+			if [[ -x "$path" && "$base" != *.* ]]; then
+				first_line="$(sed -n '1p' "$path" 2>/dev/null || true)"
+				case "$first_line" in
+				'#!'*sh | '#!'*bash | '#!'*zsh) SHELL_FILES=$((SHELL_FILES + 1)) ;;
+				esac
+			fi
+			;;
+		esac
+	done < <(find . \
+		\( -name '.git' \
+		-o -name 'node_modules' \
+		-o -name 'vendor' \
+		-o -name 'dist' \
+		-o -name 'build' \
+		-o -name 'coverage' \
+		-o -name '.cache' \
+		-o -name '.venv' \
+		-o -name '__pycache__' \
+		-o -name '.mypy_cache' \
+		-o -name '.pytest_cache' \
+		-o -name '.ruff_cache' \
+		-o -name 'obsidian' \) -prune \
+		-o -type f -print0 2>/dev/null)
+
+	[[ "$PY_FILES" -gt 0 || "$PY_NOTEBOOKS" -gt 0 || "$PY_CONFIGS" -gt 0 ]] && PYTHON=1
+	[[ "$NODE_MANIFESTS" -gt 0 ]] && NODE_PKG=1
+	[[ "$TS_FILES" -gt 0 || "$TSX_FILES" -gt 0 ]] && TS=1
+	[[ "$HTML_FILES" -gt 0 || "$CSS_FILES" -gt 0 || "$JS_FILES" -gt 0 || "$JSX_FILES" -gt 0 || "$TS_FILES" -gt 0 || "$TSX_FILES" -gt 0 ]] && STATIC_WEB=1
+	[[ "$PHP_FILES" -gt 0 || "$PHP_MANIFESTS" -gt 0 ]] && PHP_LANG=1
+	[[ "$SHELL_FILES" -gt 0 ]] && SHELL_LANG=1
+	[[ "$GO_FILES" -gt 0 || "$GO_MANIFESTS" -gt 0 ]] && GO_LANG=1
+	[[ "$RUST_FILES" -gt 0 || "$RUST_MANIFESTS" -gt 0 ]] && RUST_LANG=1
+	[[ "$DOTNET_FILES" -gt 0 || "$DOTNET_MANIFESTS" -gt 0 ]] && DOTNET=1
+	if [[ "$PYTHON" -eq 1 || "$NODE_PKG" -eq 1 || "$STATIC_WEB" -eq 1 || "$PHP_LANG" -eq 1 || "$SHELL_LANG" -eq 1 || "$GO_LANG" -eq 1 || "$RUST_LANG" -eq 1 || "$DOTNET" -eq 1 ]]; then
+		UNKNOWN=0
+	fi
+	return 0
+}
+
+detect_file_signals
 
 print_detection() {
 	echo
 	log "Detected repo signals:"
-	[[ "$PYTHON" -eq 1 && "$PYTHON_STRONG" -eq 1 ]] && echo "  - Python"
-	[[ "$PYTHON" -eq 1 && "$PYTHON_STRONG" -eq 0 ]] && echo "  - Python files without a Python project manifest"
-	[[ "$PHP_LANG" -eq 1 ]] && echo "  - PHP"
-	[[ "$NODE_PKG" -eq 1 ]] && echo "  - Node/package.json"
-	[[ "$STATIC_WEB" -eq 1 && "$NODE_PKG" -eq 0 ]] && echo "  - Static HTML/CSS/JS without package.json"
-	[[ "$TS" -eq 1 ]] && echo "  - TypeScript"
-	[[ "$SHELL_LANG" -eq 1 ]] && echo "  - Shell scripts"
-	[[ "$GO_LANG" -eq 1 ]] && echo "  - Go"
-	[[ "$RUST_LANG" -eq 1 ]] && echo "  - Rust"
-	[[ "$DOTNET" -eq 1 ]] && echo "  - .NET"
+	[[ "$PYTHON" -eq 1 ]] && echo "  - Python: $PY_FILES .py, $PY_NOTEBOOKS .ipynb, $PY_CONFIGS config/manifest files"
+	[[ "$NODE_PKG" -eq 1 || "$TS" -eq 1 || "$JS_FILES" -gt 0 || "$JSX_FILES" -gt 0 ]] && echo "  - Node/JS/TS: $NODE_MANIFESTS package.json, $ANGULAR_MANIFESTS angular.json, $JS_FILES .js, $JSX_FILES .jsx, $TS_FILES .ts, $TSX_FILES .tsx"
+	[[ "$HTML_FILES" -gt 0 || "$CSS_FILES" -gt 0 ]] && echo "  - Web markup/styles: $HTML_FILES HTML, $CSS_FILES CSS"
+	[[ "$PHP_LANG" -eq 1 ]] && echo "  - PHP: $PHP_FILES .php, $PHP_MANIFESTS composer.json"
+	[[ "$SHELL_LANG" -eq 1 ]] && echo "  - Shell: $SHELL_FILES shell scripts"
+	[[ "$GO_LANG" -eq 1 ]] && echo "  - Go: $GO_FILES .go, $GO_MANIFESTS go.mod"
+	[[ "$RUST_LANG" -eq 1 ]] && echo "  - Rust: $RUST_FILES .rs, $RUST_MANIFESTS Cargo.toml"
+	[[ "$DOTNET" -eq 1 ]] && echo "  - .NET: $DOTNET_FILES .cs, $DOTNET_MANIFESTS project/solution files"
 	[[ "$UNKNOWN" -eq 1 ]] && echo "  - No clear project type detected yet" || true
 	return 0
 }
@@ -441,21 +502,6 @@ print_recommendations() {
 	log "Recommended quality tools."
 
 	if [[ "$PYTHON" -eq 1 ]]; then
-		if [[ "$PYTHON_STRONG" -eq 0 ]]; then
-			cat <<'PYREC_WEAK'
-
-Python files without a Python project manifest:
-  Python files were found, but there is no pyproject.toml, requirements.txt,
-  setup.py/setup.cfg, Pipfile, uv.lock, ruff.toml, mypy.ini, or pyrightconfig.json.
-
-  The script will recommend Python tools, but will not wire them automatically
-  into the main repo gate until the repo has a Python project/config signal.
-
-  If those Python files are part of the project, add the appropriate Python
-  project config, then rerun this script.
-PYREC_WEAK
-		fi
-
 		cat <<'PYREC'
 
 Python:
@@ -490,7 +536,7 @@ NODEREC
 	elif [[ "$STATIC_WEB" -eq 1 ]]; then
 		cat <<'WEBREC'
 
-Static HTML/CSS/JS without package.json:
+JS/TS/HTML/CSS files without package.json:
   This script can create package.json when you approve npm tool installation,
   so Biome and HTMLHint can be installed as repo-local dev dependencies.
 
@@ -562,7 +608,7 @@ DOTNETREC
 		cat <<'UNKNOWNREC'
 
 No clear project type yet:
-  Start building the repo first, or decide the stack manually.
+  Start building the repo first, or decide which tools fit the files manually.
   The script will not create fake lint/test/typecheck targets.
 UNKNOWNREC
 	fi
@@ -646,7 +692,7 @@ detect_available_checks() {
 	reset_checks
 
 	# Python checks
-	if [[ "$PYTHON" -eq 1 && "$PYTHON_STRONG" -eq 1 ]]; then
+	if [[ "$PYTHON" -eq 1 ]]; then
 		if cmd_exists ruff; then
 			add_check lint python "ruff check ."
 			add_check format python "ruff format ."
@@ -659,8 +705,6 @@ detect_available_checks() {
 		if cmd_exists pytest && has_any \( -path './tests/*' -o -name 'test_*.py' -o -name '*_test.py' \); then
 			add_check test python "pytest -q"
 		fi
-	elif [[ "$PYTHON" -eq 1 && "$PYTHON_STRONG" -eq 0 ]]; then
-		warn "Python files found without a Python project manifest; not wiring Ruff/pytest automatically."
 	fi
 
 	# Node/package.json checks
