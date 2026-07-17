@@ -26,7 +26,7 @@ Usage: part2.sh [options]
 Options:
   --dry-run          Show what would happen without writing files.
   --yes              Non-interactive defaults. Continues with available checks.
-  --fresh-install    Fresh quality setup: install missing tools, wire Makefile, run safe fixes.
+  --fresh-install    Fresh quality setup: install missing tools and wire Makefile.
   --install          Install missing recommended quality tools without prompting.
   --no-install       Do not install tools; recommendations/wiring only.
   --wire             Write/update Makefile using only currently available checks.
@@ -40,14 +40,15 @@ Options:
 
 Design:
   - Prompts before installing missing dev quality tools unless --yes/--install is used.
-  - --fresh-install is equivalent to --install --wire --fix; existing Makefile is backed up.
+  - --fresh-install is equivalent to --install --wire; existing Makefile is backed up.
+  - Automatic format/fix commands run only after an interactive prompt or explicit --fix.
   - Refreshes tool detection after installation before wiring checks.
   - Prompts to run safe automatic fixers after wiring unless --no-fix is used.
   - Keeps installs scoped to dev tooling.
   - Creates Makefile targets only for checks that actually exist.
   - Creates AI-capped *-ai targets that write full logs under .cache/ai-quality/.
   - Creates edited-ai to format, lint, and typecheck only edited files.
-  - Preserves/adds wiki-ai when scripts/update-codebase-wiki.py exists.
+  - Preserves/adds wiki-ai when vibe_scripts/update-codebase-wiki.py exists.
   - Never creates fake lint/typecheck/test targets.
 USAGE
 }
@@ -66,7 +67,6 @@ while [[ $# -gt 0 ]]; do
 		FRESH_INSTALL=1
 		INSTALL_MODE="yes"
 		WIRE_MODE="yes"
-		FIX_MODE="yes"
 		shift
 		;;
 	--install)
@@ -272,6 +272,17 @@ should_install() {
 	ask_yn "$prompt" "y"
 }
 
+should_install_optional() {
+	local prompt="$1"
+	if [[ "$INSTALL_MODE" == "no" ]]; then
+		return 1
+	fi
+	if [[ "$INSTALL_MODE" == "yes" || "$YES" -eq 1 ]]; then
+		return 1
+	fi
+	ask_yn "$prompt" "n"
+}
+
 run_install() {
 	local label="$1"
 	shift
@@ -346,10 +357,12 @@ install_missing_quality_tools() {
 	fi
 
 	if ! cmd_exists semgrep; then
-		if cmd_exists brew && should_install "Install Semgrep with Homebrew?"; then
+		if cmd_exists brew && should_install_optional "Install optional Semgrep with Homebrew?"; then
 			run_install "Semgrep" brew install semgrep || warn "Semgrep install failed."
+		elif cmd_exists brew; then
+			warn "optional semgrep install skipped."
 		else
-			warn "semgrep missing and Homebrew unavailable or install skipped."
+			warn "optional semgrep skipped because Homebrew is unavailable."
 		fi
 	fi
 }
@@ -598,7 +611,7 @@ UNKNOWNREC
 	cat <<'SECURITYREC'
 
 Security scanner:
-  Semgrep:
+  Semgrep (optional):
     brew install semgrep
     semgrep scan
 SECURITYREC
@@ -804,13 +817,13 @@ print_available_checks() {
 }
 
 write_ai_quality_wrapper() {
-	local path="scripts/ai-quality-wrapper.py"
+	local path="vibe_scripts/ai-quality-wrapper.py"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
 		log "Would write $path for AI-safe capped linter output."
 		return 0
 	fi
 
-	mkdir -p scripts
+	mkdir -p vibe_scripts
 	cat >"$path" <<'PYWRAPPER'
 #!/usr/bin/env python3
 """Run a quality command with AI-safe output.
@@ -948,19 +961,19 @@ PYWRAPPER
 }
 
 write_agent_check_edited() {
-	local path="scripts/agent-check-edited.py"
+	local path="vibe_scripts/agent-check-edited.py"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
 		log "Would write $path for formatter-first edited-file checks."
 		return 0
 	fi
 
-	mkdir -p scripts
+	mkdir -p vibe_scripts
 	cat >"$path" <<'PYCHECK'
 #!/usr/bin/env python3
 """Format and verify files edited by the agent.
 
 Default input is the current Git changed/untracked file set. Commands are routed
-through scripts/ai-quality-wrapper.py so full output is logged while the AI
+through vibe_scripts/ai-quality-wrapper.py so full output is logged while the AI
 transcript receives capped summaries.
 """
 
@@ -990,6 +1003,21 @@ EXCLUDED_DIRS = {
 
 BIOME_EXTS = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".css", ".json", ".jsonc"}
 HTML_EXTS = {".html", ".htm"}
+FRONTEND_DESIGN_EXTS = {
+    ".astro",
+    ".css",
+    ".htm",
+    ".html",
+    ".js",
+    ".jsx",
+    ".less",
+    ".sass",
+    ".scss",
+    ".svelte",
+    ".ts",
+    ".tsx",
+    ".vue",
+}
 PHP_EXTS = {".php"}
 SHELL_EXTS = {".sh", ".bash", ".zsh"}
 
@@ -1031,13 +1059,15 @@ def existing_project_files(root: Path, files: list[str]) -> list[str]:
 
 
 def split_by_ext(files: list[str]) -> dict[str, list[str]]:
-    groups = {"biome": [], "html": [], "php": [], "shell": []}
+    groups = {"biome": [], "html": [], "design": [], "php": [], "shell": []}
     for file in files:
         suffix = Path(file).suffix.lower()
         if suffix in BIOME_EXTS:
             groups["biome"].append(file)
         if suffix in HTML_EXTS:
             groups["html"].append(file)
+        if suffix in FRONTEND_DESIGN_EXTS:
+            groups["design"].append(file)
         if suffix in PHP_EXTS:
             groups["php"].append(file)
         if suffix in SHELL_EXTS:
@@ -1065,12 +1095,22 @@ def npm_has_script(root: Path, name: str) -> bool:
     return isinstance(scripts, dict) and isinstance(scripts.get(name), str)
 
 
+def local_impeccable_command(root: Path) -> list[str] | None:
+    local_bin = root / "node_modules" / ".bin" / "impeccable"
+    if local_bin.exists():
+        return ["npx", "--no-install", "impeccable"]
+    executable = shutil.which("impeccable")
+    if executable:
+        return [executable]
+    return None
+
+
 def quote_files(files: list[str]) -> str:
     return " ".join(shlex.quote(file) for file in files)
 
 
 def wrapper_command(root: Path, label: str, command: list[str], *, shell: bool = False, max_lines: int = 24) -> list[str]:
-    wrapper = root / "scripts" / "ai-quality-wrapper.py"
+    wrapper = root / "vibe_scripts" / "ai-quality-wrapper.py"
     args = [sys.executable, str(wrapper), "--label", label, "--max-lines", str(max_lines)]
     if shell:
         args.append("--shell")
@@ -1112,6 +1152,11 @@ def build_commands(root: Path, groups: dict[str, list[str]]) -> tuple[list[tuple
         files = quote_files(groups["html"])
         lint_cmds.append(("lint-html-edited", [f"npx htmlhint --nocolor --format compact {files}"], True, 24, False))
 
+    impeccable = local_impeccable_command(root)
+    if groups["design"] and impeccable:
+        detector_args = " ".join(shlex.quote(part) for part in impeccable + ["detect", *groups["design"]])
+        lint_cmds.append(("design-impeccable-edited", [detector_args], True, 30, False))
+
     if groups["php"]:
         files = quote_files(groups["php"])
         syntax_loop = "for file in " + files + "; do php -l \"$file\"; done"
@@ -1149,11 +1194,11 @@ def main() -> int:
     os.chdir(root)
     files = existing_project_files(root, args.files if args.files else git_changed_files(root))
     groups = split_by_ext(files)
-    relevant = sorted(set(groups["biome"] + groups["html"] + groups["php"] + groups["shell"]))
+    relevant = sorted(set(groups["biome"] + groups["html"] + groups["design"] + groups["php"] + groups["shell"]))
 
     print(f"[edited-check] root: {root}")
     if not relevant:
-        print("[edited-check] no edited JS/CSS/JSON/HTML/PHP/shell files to check")
+        print("[edited-check] no edited frontend/PHP/shell files to check")
         return 0
 
     print(f"[edited-check] files: {len(relevant)}")
@@ -1200,7 +1245,7 @@ emit_ai_cmd() {
 	local cmd="$2"
 	local escaped_cmd
 	escaped_cmd="${cmd//\'/\'\\\'\'}"
-	printf "\t@python3 scripts/ai-quality-wrapper.py --label %q --max-lines 30 --shell -- '%s'\n" "$label" "$escaped_cmd"
+	printf "\t@python3 vibe_scripts/ai-quality-wrapper.py --label %q --max-lines 30 --shell -- '%s'\n" "$label" "$escaped_cmd"
 }
 
 write_makefile() {
@@ -1329,12 +1374,12 @@ write_makefile() {
 		echo
 		echo ".PHONY: edited-ai"
 		echo "edited-ai:"
-		echo "	@python3 scripts/agent-check-edited.py"
-		if [[ -f scripts/update-codebase-wiki.py || -d codebase-wiki ]]; then
+		echo "	@python3 vibe_scripts/agent-check-edited.py"
+		if [[ -f vibe_scripts/update-codebase-wiki.py || -d codebase-wiki ]]; then
 			echo
 			echo ".PHONY: wiki-ai"
 			echo "wiki-ai:"
-			echo "	@python3 scripts/update-codebase-wiki.py"
+			echo "	@python3 vibe_scripts/update-codebase-wiki.py"
 		fi
 	} >"$tmp"
 
@@ -1428,18 +1473,49 @@ Semgrep note:
 SEMGREP_NOTE
 }
 
+warn_fixers_scope() {
+	warn "Automatic fixers may rewrite files across the entire codebase."
+	warn "Commands that will run:"
+	local cmd
+	for cmd in "${FORMAT_CMDS[@]}"; do
+		warn "  $cmd"
+	done
+}
+
 should_run_fixers() {
 	if [[ ${#FORMAT_CMDS[@]} -eq 0 ]]; then
 		return 1
 	fi
 	case "$FIX_MODE" in
-	yes) return 0 ;;
+	yes)
+		warn_fixers_scope
+		return 0
+		;;
 	no) return 1 ;;
 	esac
 	if [[ "$YES" -eq 1 ]]; then
-		return 0
+		return 1
 	fi
-	ask_yn "Run safe automatic fixers now?" "y"
+	warn_fixers_scope
+	ask_yn "Run these automatic fixers now?" "n"
+}
+
+fixer_verify_cmd() {
+	local cmd="$1"
+	case "$cmd" in
+	*npx\ biome\ check\ --write\ *)
+		printf '%s\n' "${cmd/biome check --write/biome check}"
+		;;
+	*biome\ check\ --write\ *)
+		printf '%s\n' "${cmd/biome check --write/biome check}"
+		;;
+	ruff\ format\ *)
+		printf '%s\n' "${cmd/ruff format/ruff format --check}"
+		;;
+	*)
+		return 1
+		;;
+	esac
 }
 
 run_fixers_now() {
@@ -1455,15 +1531,23 @@ run_fixers_now() {
 
 	echo
 	log "Running safe automatic fixers."
-	local cmd failed=0
+	local cmd verify_cmd failed=0
 	for cmd in "${FORMAT_CMDS[@]}"; do
 		printf '+ %s\n' "$cmd"
 		if [[ "$DRY_RUN" -eq 1 ]]; then
 			continue
 		fi
 		if ! bash -lc "$cmd"; then
+			verify_cmd="$(fixer_verify_cmd "$cmd" 2>/dev/null || true)"
+			if [[ -n "$verify_cmd" ]]; then
+				printf '+ %s\n' "$verify_cmd"
+				if bash -lc "$verify_cmd"; then
+					log "Fixer completed after applying changes: $cmd"
+					continue
+				fi
+			fi
 			failed=1
-			warn "Fixer reported remaining issues: $cmd"
+			warn "Fixer still reports issues after applying changes: $cmd"
 		fi
 	done
 
@@ -1528,7 +1612,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
 	log "Final checks:"
 	log "  make edited-ai   # format/lint/typecheck edited files with capped AI output"
 	log "  make verify-ai   # broader AI-safe quality/security checks"
-	if [[ -f scripts/update-codebase-wiki.py || -d codebase-wiki ]]; then
+	if [[ -f vibe_scripts/update-codebase-wiki.py || -d codebase-wiki ]]; then
 		log "  make wiki-ai     # refresh generated codebase-wiki sections"
 	fi
 	print_semgrep_note

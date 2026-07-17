@@ -50,6 +50,12 @@ If your network requires an internal Python package mirror for prerequisite Pyth
 bash /path/to/CodexHelper/MacOS/part1.sh --repo-only --fresh-install --python-index-url=https://your-python-mirror.example.com/simple --no-apply-codex-config
 ```
 
+To opt into Impeccable for frontend design work in Codex, run `part1.sh` with `--impeccable`, then restart Codex and approve the Impeccable hook in `/hooks`:
+
+```sh
+bash /path/to/CodexHelper/MacOS/part1.sh --repo-only --impeccable --no-apply-codex-config
+```
+
 Then preview and run the quality tooling setup:
 
 ```sh
@@ -97,6 +103,12 @@ If your network requires an internal Python package mirror for prerequisite Pyth
 bash /path/to/CodexHelper/WSL/part1.sh --repo-only --fresh-install --python-index-url=https://your-python-mirror.example.com/simple --no-apply-codex-config
 ```
 
+To opt into Impeccable for frontend design work in Codex, run `part1.sh` with `--impeccable`, then restart Codex and approve the Impeccable hook in `/hooks`:
+
+```sh
+bash /path/to/CodexHelper/WSL/part1.sh --repo-only --impeccable --no-apply-codex-config
+```
+
 Then preview and run the quality tooling setup:
 
 ```sh
@@ -124,7 +136,7 @@ After that, trusted hooks handle normal edited-file checks automatically.
 
 ## Using The Workflow
 
-Once hooks are trusted, Codex checks edited files automatically after edits and before it stops. The hooks do not literally run `make edited-ai`; they call the same underlying checker, `scripts/agent-check-edited.py`, for the files Codex edited.
+Once hooks are trusted, Codex checks edited files automatically after edits and before it stops. The hooks do not literally run `make edited-ai`; they call the same underlying checker, `vibe_scripts/agent-check-edited.py`, for the files Codex edited.
 
 You normally do not need to run `make edited-ai` after every small change.
 
@@ -150,7 +162,7 @@ Use these commands when needed:
 - `make lint-ai` runs broader lint checks without Semgrep.
 - `make verify-ai` runs bigger checks. Use it for large, risky, security-sensitive, or cross-project changes. It may run Semgrep.
 - `make wiki-ai` updates `codebase-wiki/`. Use it only when you learned stable facts that future agents should know.
-- `./scripts/agent-verify.sh` runs the edited-file check by default. Pass `lint`, `verify`, `security`, or `graph` to choose another mode.
+- `./vibe_scripts/agent-verify.sh` runs the edited-file check by default. Pass `lint`, `verify`, `security`, or `graph` to choose another mode.
 
 Semgrep can be verbose. It is not automatic. It runs only when you ask for security or verify checks, or when you start `part1.sh` with `--security-scan`.
 
@@ -162,6 +174,8 @@ Review generated `codebase-wiki/` changes before treating them as durable projec
 - Checks for files Codex edited.
 - Optional Codex hooks that run those edited-file checks automatically.
 - `AGENTS.md` and `agent/` instructions for future Codex sessions.
+- Optional Impeccable integration tells Codex to use `$impeccable` for frontend design creation, polish, audit, critique, responsive, typography, color, and design-system tasks when the skill is installed.
+- Frontend edits automatically trigger the generated design touch gate in `agent/coding-rules.md`; the edited-file checker also runs `impeccable detect` on touched frontend files when Impeccable is already available locally.
 - `codebase-wiki/` for stable project knowledge.
 
 ## Notes

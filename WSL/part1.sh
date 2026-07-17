@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bootstrap a token-efficient, quality-focused AI coding workflow for Codex on Ubuntu WSL.
-# Installs/configures: Ponytail, code-review-graph, optional Context7, and
+# Installs/configures: Ponytail, code-review-graph, optional Context7/Impeccable, and
 # repo-local Codex workflow files. Semgrep and project linters are handled by
 # part2.sh.
 #
@@ -23,6 +23,7 @@ FRESH_INSTALL=0
 SKIP_GLOBAL=0
 WITH_LLM_COUNCIL=0
 RUN_CONTEXT7=0
+RUN_IMPECCABLE=0
 RUN_SECURITY_SCAN=0
 RUN_CRG_BUILD=1
 CREATE_CODEX_HOOKS=1
@@ -57,6 +58,7 @@ Options:
   --skip-global         Alias for --repo-only.
   --with-llm-council    Clone Karpathy llm-council into ~/.local/share/llm-council.
   --context7            Run interactive Context7 setup with npx ctx7 setup.
+  --impeccable          Install Impeccable design skill/hooks with npx impeccable install.
   --codex-hooks         Create local Codex hooks for edited-file checks and Git blocking. Enabled by default.
   --no-codex-hooks      Do not create Codex hook files/config.
   --apply-codex-config  Search for ~/.codex/config.toml and add the Git-blocking hook automatically.
@@ -89,6 +91,7 @@ Repo scaffolding only:
 Notes:
   - Ponytail for Codex requires an interactive /plugins and /hooks step after marketplace add.
   - Context7 setup is interactive OAuth, so it only runs when --context7 is used.
+  - Impeccable setup is optional and only runs with --impeccable. Codex hook trust still requires /hooks.
   - Graphify is detected but not installed because its install method depends on your current setup.
   - If uv is missing, the script offers to install it with pipx.
   - In --yes mode, missing uv/pipx are installed only when explicitly requested.
@@ -110,6 +113,7 @@ for arg in "$@"; do
 	--skip-global | --repo-only) SKIP_GLOBAL=1 ;;
 	--with-llm-council) WITH_LLM_COUNCIL=1 ;;
 	--context7) RUN_CONTEXT7=1 ;;
+	--impeccable) RUN_IMPECCABLE=1 ;;
 	--codex-hooks) CREATE_CODEX_HOOKS=1 ;;
 	--no-codex-hooks) CREATE_CODEX_HOOKS=0 ;;
 	--apply-codex-config) CODEX_CONFIG_MODE="apply" ;;
@@ -538,7 +542,7 @@ check_prereqs() {
 		warn "Global AI tools will only be installed with isolated uv tool/pipx, never plain pip."
 	fi
 	if ! have node; then warn "node not found. Ponytail hooks and Context7 setup require Node.js."; fi
-	if ! have npm && ! have npx; then warn "npm/npx not found. Context7 setup will not run."; fi
+	if ! have npm && ! have npx; then warn "npm/npx not found. Context7 and Impeccable setup will not run."; fi
 	if ! have codex; then warn "codex CLI not found. Ponytail Codex plugin steps will be skipped."; fi
 
 	log "Detected tools:"
@@ -900,9 +904,38 @@ install_with_uv_or_pipx() {
 	fi
 }
 
+setup_impeccable() {
+	if [[ "$RUN_IMPECCABLE" == "1" ]]; then
+		if have npx; then
+			warn "Impeccable install may write .agents/, .codex/hooks.json, .impeccable/, PRODUCT.md, and DESIGN.md."
+			warn "Codex still requires opening /hooks and approving the Impeccable project hook before it runs automatically."
+			if confirm "Install Impeccable design skill/hooks with npx impeccable install?"; then
+				if [[ "$DRY_RUN" == "1" ]]; then
+					run npx npx impeccable install
+					record_install_skipped "Impeccable install would run (dry-run)"
+				elif run npx npx impeccable install; then
+					record_install_ok "Impeccable install completed"
+					record_install_skipped "Impeccable still needs /impeccable init and Codex /hooks approval"
+				else
+					warn "Impeccable install failed or was cancelled."
+					record_install_failed "Impeccable install failed/cancelled"
+				fi
+			else
+				record_install_skipped "Impeccable install skipped by user"
+			fi
+	else
+			warn "Cannot run Impeccable setup because npx was not found."
+			record_install_skipped "Impeccable skipped: npx unavailable"
+		fi
+	else
+		warn "Impeccable setup not run. Use --impeccable when you want Codex frontend design skill/hooks: npx impeccable install"
+	fi
+}
+
 install_global_tools() {
 	if [[ "$SKIP_GLOBAL" == "1" ]]; then
 		log "Skipping global tool installs (--repo-only/--skip-global)."
+		setup_impeccable
 		return 0
 	fi
 
@@ -1009,6 +1042,8 @@ install_global_tools() {
 	else
 		warn "Context7 setup not run. Use --context7 when you are ready for interactive OAuth: npx ctx7 setup"
 	fi
+
+	setup_impeccable
 
 	# LLM Council optional clone, not installed as app dependency.
 	if [[ "$WITH_LLM_COUNCIL" == "1" ]]; then
@@ -1172,8 +1207,10 @@ Before editing:
 - Read relevant `/codebase-wiki/` pages for durable repo memory.
 - Use Graphify if available for broad repo discovery, unfamiliar areas, architecture decisions, or high-risk changes.
 - Use code-review-graph for affected files, callers, dependents, tests, and blast radius.
+- Before writing code, state the change plan and check that it directly solves the issue without creating broader side effects.
 - Apply Ponytail discipline: skip unnecessary work, reuse existing code, prefer stdlib/native features, avoid new dependencies, and make the smallest safe change.
 - Use Context7 for library/API/framework docs, setup, configuration, or unfamiliar APIs.
+- Use `$impeccable` for frontend design work when available: UI creation, visual polish, layout, typography, color, responsive behavior, UX copy, design-system drift, accessibility, or frontend design audits.
 - Read `/agent/index.md` for workflow details.
 - Read only the minimal files needed.
 
@@ -1189,6 +1226,7 @@ Implementation rules:
 - Do not rewrite architecture unless explicitly asked.
 - Do not remove validation, error handling, security checks, accessibility, or data-loss protection to make code shorter.
 - Write or update tests for behavior changes.
+- When touching frontend files, apply the frontend design touch gate in `/agent/coding-rules.md` even if no design skill is invoked.
 
 Before final answer:
 - Run the relevant verification command.
@@ -1226,10 +1264,12 @@ Default workflow:
 2. Read the relevant `/codebase-wiki/` page for durable repo memory.
 3. Use Graphify and/or code-review-graph to identify the smallest affected area when the task is broad or unfamiliar.
 4. Use Context7 for framework/library/API details.
-5. Apply Ponytail: reuse existing code, prefer stdlib/native capabilities, avoid new dependencies, and make the smallest safe change.
-6. Add or update tests when behavior changes.
-7. Run `make edited-ai` after edits so changed files are formatted, linted, and typechecked. Use `make verify-ai` for broader AI-safe repo checks when risk warrants it.
-8. Run `make wiki-ai` when Graphify/session work reveals durable knowledge, then review the generated wiki sections.
+5. Use `$impeccable` for frontend design tasks when available; run `/impeccable init` first when PRODUCT.md or DESIGN.md is missing.
+6. Before writing code, state the planned files/behavior change and why it should solve the issue without broadening scope or creating new risk.
+7. Apply Ponytail: reuse existing code, prefer stdlib/native capabilities, avoid new dependencies, and make the smallest safe change.
+8. Add or update tests when behavior changes.
+9. Run `make edited-ai` after edits so changed files are formatted, linted, and typechecked. Use `make verify-ai` for broader AI-safe repo checks when risk warrants it.
+10. Run `make wiki-ai` when Graphify/session work reveals durable knowledge, then review the generated wiki sections.
 EOF_AGENT_INDEX
 	)
 	write_file "agent/index.md" "$agent_index"
@@ -1277,6 +1317,18 @@ npx ctx7 setup
 ```
 
 Use Context7 when work depends on external library, framework, API, setup, or configuration details.
+
+Impeccable for frontend design:
+
+```bash
+npx impeccable install
+/impeccable init
+/impeccable polish the page or component
+/impeccable audit the frontend area
+npx impeccable detect src/
+```
+
+After installing Impeccable for Codex, restart Codex, open `/hooks`, approve the project hook, and start a new thread. Use `$impeccable` or `/impeccable` for frontend design creation, review, and refinement.
 EOF_COMMANDS
 	)
 	write_file "agent/commands.md" "$commands_md"
@@ -1316,6 +1368,16 @@ EOF_VERIFY
 		cat <<'EOF_CODING'
 # Coding rules
 
+Code-write planning gate:
+Before creating or editing code, pause and state:
+1. The exact problem being solved.
+2. The files or modules expected to change.
+3. Why this change should solve the issue.
+4. What could break or be affected nearby.
+5. The verification that will show the fix worked.
+
+If this check shows the proposed change is too broad, risky, or only indirectly related to the issue, narrow the plan before editing.
+
 Ponytail discipline:
 1. Does this need to exist? If not, skip it.
 2. Is it already in this codebase? Reuse it.
@@ -1335,6 +1397,17 @@ Never shorten code by removing:
 
 Context7 rule:
 Use Context7 whenever library/API documentation, framework behavior, setup, configuration, or generated code depends on external package details. Prefer exact library IDs and versions when known.
+
+Impeccable rule:
+Use `$impeccable` whenever the task changes or evaluates frontend design, including layout, typography, color, visual hierarchy, component polish, responsive behavior, motion, onboarding, UX copy, accessibility-facing UI, or design-system consistency. If PRODUCT.md or DESIGN.md is missing, initialize design context with `/impeccable init` before relying on design recommendations. Prefer `/impeccable shape` before building new UI, `/impeccable polish` for existing UI, `/impeccable audit` before shipping, and `npx impeccable detect` for deterministic design checks.
+
+Frontend design touch gate:
+Whenever editing frontend code or styles (`.tsx`, `.jsx`, `.html`, `.vue`, `.svelte`, `.astro`, `.css`, `.scss`, `.sass`, `.less`, UI-facing `.ts`/`.js`), first decide whether `$impeccable` or an Impeccable command should be used. Prefer text/CLI commands (`shape`, `polish`, `audit`, `critique`, `typeset`, `layout`, `colorize`, `adapt`, `harden`, `detect`) and do not use Live Mode or visual-overlay tooling unless the user asks for it. If Impeccable is unavailable, still apply these standards manually:
+- preserve existing tokens, components, spacing scales, and conventions before inventing new ones
+- match the surface type: dense, predictable, utilitarian product UI versus expressive brand/marketing UI
+- avoid AI-design tells such as purple-blue gradients, generic Inter-only typography, nested cards, over-rounded controls, gray text on colored backgrounds, ornamental blobs, and card-heavy layouts
+- check hierarchy, contrast, alignment, spacing rhythm, responsive behavior, text overflow, empty/loading/error states, keyboard/focus states, touch targets, and accessibility
+- keep diffs small and use existing CSS/component patterns unless the task explicitly calls for a redesign
 EOF_CODING
 	)
 	write_file "agent/coding-rules.md" "$coding_rules"
@@ -1588,13 +1661,13 @@ security:
 verify: lint typecheck test security
 
 edited-ai:
-	python3 scripts/agent-check-edited.py
+	python3 vibe_scripts/agent-check-edited.py
 
 wiki-ai:
-	python3 scripts/update-codebase-wiki.py
+	python3 vibe_scripts/update-codebase-wiki.py
 
 agent-verify:
-	./scripts/agent-verify.sh
+	./vibe_scripts/agent-verify.sh
 $endmarker
 EOF_MAKE
 	)
@@ -1627,7 +1700,7 @@ PY
 # >>> codebase-wiki target >>>
 .PHONY: wiki-ai
 wiki-ai:
-	python3 scripts/update-codebase-wiki.py
+	python3 vibe_scripts/update-codebase-wiki.py
 # <<< codebase-wiki target <<<
 EOF_WIKI_MAKE
 			)
@@ -1945,7 +2018,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 EOF_WIKI_SCRIPT
 	)
-	write_file "scripts/update-codebase-wiki.py" "$script" "0755"
+	write_file "vibe_scripts/update-codebase-wiki.py" "$script" "0755"
 }
 
 create_verify_script() {
@@ -2026,7 +2099,7 @@ else
 fi
 EOF_VERIFY_SCRIPT
 	)
-	write_file "scripts/agent-verify.sh" "$script" "0755"
+	write_file "vibe_scripts/agent-verify.sh" "$script" "0755"
 }
 
 create_ai_quality_wrapper_script() {
@@ -2129,7 +2202,7 @@ if __name__ == "__main__":
     sys.exit(main())
 EOF_AI_WRAPPER
 	)
-	write_file "scripts/ai-quality-wrapper.py" "$script" "0755"
+	write_file "vibe_scripts/ai-quality-wrapper.py" "$script" "0755"
 }
 
 create_edited_check_script() {
@@ -2154,6 +2227,21 @@ from pathlib import Path
 EXCLUDED_DIRS = {".cache", ".git", ".venv", "build", "coverage", "dist", "node_modules", "obsidian", "vendor"}
 BIOME_EXTS = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".css", ".json", ".jsonc"}
 HTML_EXTS = {".html", ".htm"}
+FRONTEND_DESIGN_EXTS = {
+    ".astro",
+    ".css",
+    ".htm",
+    ".html",
+    ".js",
+    ".jsx",
+    ".less",
+    ".sass",
+    ".scss",
+    ".svelte",
+    ".ts",
+    ".tsx",
+    ".vue",
+}
 PHP_EXTS = {".php"}
 SHELL_EXTS = {".sh", ".bash", ".zsh"}
 
@@ -2195,13 +2283,15 @@ def existing_project_files(root: Path, files: list[str]) -> list[str]:
 
 
 def split_by_ext(files: list[str]) -> dict[str, list[str]]:
-    groups = {"biome": [], "html": [], "php": [], "shell": []}
+    groups = {"biome": [], "html": [], "design": [], "php": [], "shell": []}
     for file in files:
         suffix = Path(file).suffix.lower()
         if suffix in BIOME_EXTS:
             groups["biome"].append(file)
         if suffix in HTML_EXTS:
             groups["html"].append(file)
+        if suffix in FRONTEND_DESIGN_EXTS:
+            groups["design"].append(file)
         if suffix in PHP_EXTS:
             groups["php"].append(file)
         if suffix in SHELL_EXTS:
@@ -2229,12 +2319,22 @@ def npm_has_script(root: Path, name: str) -> bool:
     return isinstance(scripts, dict) and isinstance(scripts.get(name), str)
 
 
+def local_impeccable_command(root: Path) -> list[str] | None:
+    local_bin = root / "node_modules" / ".bin" / "impeccable"
+    if local_bin.exists():
+        return ["npx", "--no-install", "impeccable"]
+    executable = shutil.which("impeccable")
+    if executable:
+        return [executable]
+    return None
+
+
 def quote_files(files: list[str]) -> str:
     return " ".join(shlex.quote(file) for file in files)
 
 
 def run_wrapped(root: Path, label: str, command: list[str], *, shell: bool = False, max_lines: int = 24) -> int:
-    wrapper = root / "scripts" / "ai-quality-wrapper.py"
+    wrapper = root / "vibe_scripts" / "ai-quality-wrapper.py"
     args = [sys.executable, str(wrapper), "--label", label, "--max-lines", str(max_lines)]
     if shell:
         args.append("--shell")
@@ -2269,6 +2369,10 @@ def build_commands(root: Path, groups: dict[str, list[str]]) -> tuple[list[tuple
     if groups["html"] and have_path(root, "node_modules/.bin/htmlhint"):
         files = quote_files(groups["html"])
         lint_cmds.append(("lint-html-edited", [f"npx htmlhint --nocolor --format compact {files}"], True, 24, False))
+    impeccable = local_impeccable_command(root)
+    if groups["design"] and impeccable:
+        detector_args = " ".join(shlex.quote(part) for part in impeccable + ["detect", *groups["design"]])
+        lint_cmds.append(("design-impeccable-edited", [detector_args], True, 30, False))
     if groups["php"]:
         files = quote_files(groups["php"])
         syntax_loop = "for file in " + files + "; do php -l \"$file\"; done"
@@ -2299,10 +2403,10 @@ def main() -> int:
     os.chdir(root)
     files = existing_project_files(root, args.files if args.files else git_changed_files(root))
     groups = split_by_ext(files)
-    relevant = sorted(set(groups["biome"] + groups["html"] + groups["php"] + groups["shell"]))
+    relevant = sorted(set(groups["biome"] + groups["html"] + groups["design"] + groups["php"] + groups["shell"]))
     print(f"[edited-check] root: {root}")
     if not relevant:
-        print("[edited-check] no edited JS/CSS/JSON/HTML/PHP/shell files to check")
+        print("[edited-check] no edited frontend/PHP/shell files to check")
         return 0
     print(f"[edited-check] files: {len(relevant)}")
     for file in relevant[:30]:
@@ -2326,7 +2430,7 @@ if __name__ == "__main__":
     sys.exit(main())
 EOF_EDITED_CHECK
 	)
-	write_file "scripts/agent-check-edited.py" "$script" "0755"
+	write_file "vibe_scripts/agent-check-edited.py" "$script" "0755"
 }
 
 create_codex_hooks_templates() {
@@ -2501,9 +2605,9 @@ def main() -> int:
     paths: set[str] = set()
     collect_paths(payload, paths)
     root = git_root()
-    checker = root / "scripts" / "agent-check-edited.py"
+    checker = root / "vibe_scripts" / "agent-check-edited.py"
     if not checker.is_file():
-        print("[post-edit-check] scripts/agent-check-edited.py not found; skipping", file=sys.stderr)
+        print("[post-edit-check] vibe_scripts/agent-check-edited.py not found; skipping", file=sys.stderr)
         emit_response()
         return 0
 
@@ -2574,9 +2678,9 @@ def git_root() -> Path:
 
 def main() -> int:
     root = git_root()
-    checker = root / "scripts" / "agent-check-edited.py"
+    checker = root / "vibe_scripts" / "agent-check-edited.py"
     if not checker.is_file():
-        print("[stop-edited-check] scripts/agent-check-edited.py not found; skipping", file=sys.stderr)
+        print("[stop-edited-check] vibe_scripts/agent-check-edited.py not found; skipping", file=sys.stderr)
         return 0
     cache_file = root / ".cache" / "codex-edited-files.txt"
     if not cache_file.is_file():
@@ -2851,7 +2955,7 @@ run_final_checks() {
 		return 0
 	fi
 
-	bash -n scripts/agent-verify.sh || warn "scripts/agent-verify.sh has a syntax error."
+	bash -n vibe_scripts/agent-verify.sh || warn "vibe_scripts/agent-verify.sh has a syntax error."
 	if [[ -f .codex/hooks/pre_tool_use_policy.py ]]; then
 		python3 -m py_compile .codex/hooks/pre_tool_use_policy.py .codex/hooks/post_tool_use.py || warn "Codex hook template Python syntax failed."
 	fi
@@ -2977,7 +3081,7 @@ print_next_steps() {
 2. Verify the repo quality gate
    make edited-ai
    make verify-ai
-   ./scripts/agent-verify.sh
+   ./vibe_scripts/agent-verify.sh
 
 3. Populate the repo memory wiki
    make wiki-ai
@@ -3029,7 +3133,16 @@ EOF_PONYTAIL_NOT_CONFIGURED
    Run when ready for interactive OAuth/API setup:
    npx ctx7 setup
 
-7. code-review-graph
+7. Impeccable frontend design skill
+   Run only when you want Codex to use Impeccable for frontend design tasks:
+   bash part1.sh --impeccable
+   /impeccable init
+
+   After install, restart Codex, open /hooks, approve the Impeccable project hook,
+   and start a new thread. Frontend design tasks should then use $impeccable or
+   /impeccable for design context, polish, critique, audit, and detector checks.
+
+8. code-review-graph
 EOF_NEXT
 
 	if have_cli code-review-graph && ! binary_in_active_venv code-review-graph; then
@@ -3052,7 +3165,7 @@ EOF_CRG_MISSING
 	fi
 
 	cat <<'EOF_NEXT'
-8. Codex Git-command blocker
+9. Codex Git-command blocker
    The script searches for ~/.codex/config.toml and can apply the hook when you approve it.
    To apply non-interactively, rerun with --apply-codex-config.
    This blocks Codex Bash calls for git add/commit/push/reset/checkout/etc.
