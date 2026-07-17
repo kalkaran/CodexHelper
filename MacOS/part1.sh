@@ -2909,6 +2909,7 @@ EOF_QUALITY_NODE
 	python)
 		cat <<'EOF_QUALITY_PYTHON'
 For this Python repo:
+  Install Ruff before running part2.sh so it can wire Python lint/format targets:
   uv tool install ruff
 
   If the repo has a real Python project environment, add project dev tools there:
@@ -2921,6 +2922,7 @@ EOF_QUALITY_PYTHON
 For this Python + Node repo:
   Prefer existing package/project scripts first.
   Common starting point:
+    # Install before running part2.sh so it can wire Python lint/format targets.
     uv tool install ruff
     npm install --save-dev --save-exact @biomejs/biome
 
