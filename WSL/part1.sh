@@ -905,7 +905,7 @@ install_with_uv_or_pipx() {
 }
 
 setup_impeccable() {
-	if [[ "$RUN_IMPECCABLE" == "1" ]]; then
+	if [[ "$RUN_IMPECCABLE" == "1" || "$YES" != "1" ]]; then
 		if have npx; then
 			warn "Impeccable install may write .agents/, .codex/hooks.json, .impeccable/, PRODUCT.md, and DESIGN.md."
 			warn "Codex still requires opening /hooks and approving the Impeccable project hook before it runs automatically."
@@ -923,12 +923,12 @@ setup_impeccable() {
 			else
 				record_install_skipped "Impeccable install skipped by user"
 			fi
-	else
+		else
 			warn "Cannot run Impeccable setup because npx was not found."
 			record_install_skipped "Impeccable skipped: npx unavailable"
 		fi
 	else
-		warn "Impeccable setup not run. Use --impeccable when you want Codex frontend design skill/hooks: npx impeccable install"
+		warn "Impeccable setup not run in --yes mode. Use --impeccable to approve it non-interactively."
 	fi
 }
 
@@ -1022,8 +1022,8 @@ install_global_tools() {
 		fi
 	fi
 
-	# Context7: interactive OAuth, only run when explicitly requested.
-	if [[ "$RUN_CONTEXT7" == "1" ]]; then
+	# Context7: interactive OAuth, ask in normal interactive runs; require explicit flag in --yes mode.
+	if [[ "$RUN_CONTEXT7" == "1" || "$YES" != "1" ]]; then
 		if have npx; then
 			if confirm "Run interactive Context7 setup with npx ctx7 setup?"; then
 				if [[ "$DRY_RUN" == "1" ]]; then
@@ -1040,7 +1040,7 @@ install_global_tools() {
 			warn "Cannot run Context7 setup because npx was not found."
 		fi
 	else
-		warn "Context7 setup not run. Use --context7 when you are ready for interactive OAuth: npx ctx7 setup"
+		warn "Context7 setup not run in --yes mode. Use --context7 to approve it non-interactively."
 	fi
 
 	setup_impeccable
