@@ -4,7 +4,7 @@
 # repo-local Codex workflow files. Semgrep and project linters are handled by
 # part2.sh.
 #
-# Version: 2026-07-06-v12
+# Version: 2026-07-20-v15
 #
 # Safe defaults:
 # - Prompts before network installs unless --yes is passed.
@@ -16,6 +16,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="2026-07-20-v15"
 YES=0
 DRY_RUN=0
 FORCE=0
@@ -27,6 +28,7 @@ RUN_IMPECCABLE=0
 RUN_SECURITY_SCAN=0
 RUN_CRG_BUILD=1
 CREATE_CODEX_HOOKS=1
+CREATE_RTK_HOOK=1
 CODEX_CONFIG_MODE="ask"
 INSTALL_BREW=0
 INSTALL_UV=0
@@ -57,9 +59,11 @@ Options:
   --skip-global         Alias for --repo-only.
   --with-llm-council    Clone Karpathy llm-council into ~/.local/share/llm-council.
   --context7            Run interactive Context7 setup with npx ctx7 setup.
-  --impeccable          Install Impeccable design skill/hooks with npx impeccable install.
+  --impeccable          Install Impeccable design skill/hooks for Codex.
   --codex-hooks         Create local Codex hooks for edited-file checks and Git blocking. Enabled by default.
   --no-codex-hooks      Do not create Codex hook files/config.
+  --rtk-hook            Create the RTK PreToolUse hook. Enabled by default with --codex-hooks.
+  --no-rtk-hook         Do not create the RTK PreToolUse hook.
   --apply-codex-config  Search for ~/.codex/config.toml and add the Git-blocking hook automatically.
   --no-apply-codex-config
                         Do not prompt to apply the Codex hook config.
@@ -89,6 +93,7 @@ Notes:
   - Ponytail for Codex requires an interactive /plugins and /hooks step after marketplace add.
   - Context7 setup is interactive OAuth, so it only runs when --context7 is used.
   - Impeccable setup is optional and only runs with --impeccable. Codex hook trust still requires /hooks.
+  - RTK shell-command rewriting hook is created by default with Codex hooks; use --no-rtk-hook to skip it.
   - Graphify is detected but not installed because its install method depends on your current setup.
   - If uv is missing, the script offers to install it with Homebrew.
   - In --yes mode, missing uv is installed automatically if Homebrew is available.
@@ -114,6 +119,8 @@ for arg in "$@"; do
 	--impeccable) RUN_IMPECCABLE=1 ;;
 	--codex-hooks) CREATE_CODEX_HOOKS=1 ;;
 	--no-codex-hooks) CREATE_CODEX_HOOKS=0 ;;
+	--rtk-hook) CREATE_RTK_HOOK=1 ;;
+	--no-rtk-hook) CREATE_RTK_HOOK=0 ;;
 	--apply-codex-config) CODEX_CONFIG_MODE="apply" ;;
 	--no-apply-codex-config) CODEX_CONFIG_MODE="skip" ;;
 	--security-scan) RUN_SECURITY_SCAN=1 ;;
@@ -255,7 +262,7 @@ resolve_binary() {
 		fi
 	fi
 
-	for bin_dir in "$HOME/.local/bin" "$HOME/Library/Python/3.12/bin" "$HOME/Library/Python/3.11/bin" "$HOME/Library/Python/3.10/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
+	for bin_dir in "$HOME/.local/bin" "$HOME/.cargo/bin" "$HOME/Library/Python/3.12/bin" "$HOME/Library/Python/3.11/bin" "$HOME/Library/Python/3.10/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
 		candidate="$bin_dir/$binary"
 		if [[ -x "$candidate" ]]; then
 			printf '%s
@@ -438,13 +445,99 @@ backup_file() {
 	fi
 }
 
+managed_file_version() {
+	local path="$1"
+	[[ -f "$path" ]] || return 1
+	sed -n '1,5s/.*CodexHelper-Version:[[:space:]]*\([^[:space:]>]*\).*/\1/p' "$path" | head -n 1
+}
+
+version_marker_for_path() {
+	local path="$1"
+	case "$path" in
+	*.md) printf '<!-- CodexHelper-Version: %s -->' "$SCRIPT_VERSION" ;;
+	*) printf '# CodexHelper-Version: %s' "$SCRIPT_VERSION" ;;
+	esac
+}
+
+add_managed_version_marker() {
+	local path="$1"
+	local content="$2"
+	local marker
+	marker="$(version_marker_for_path "$path")"
+
+	case "$content" in
+	'#!'*)
+		printf '%s\n%s\n' "${content%%$'\n'*}" "$marker"
+		printf '%s\n' "${content#*$'\n'}"
+		;;
+	*)
+		printf '%s\n%s' "$marker" "$content"
+		;;
+	esac
+}
+
+move_conflicting_path() {
+	local path="$1"
+	local stamp backup
+	stamp="$(date +%Y%m%d-%H%M%S)"
+	backup="$path.bak.$stamp"
+	mv "$path" "$backup"
+	log "Moved conflicting non-directory $path -> $backup"
+}
+
+ensure_parent_dir() {
+	local path="$1"
+	local dir component current
+	dir="$(dirname "$path")"
+	if [[ "$dir" == "." || -z "$dir" ]]; then
+		return 0
+	fi
+
+	current=""
+	if [[ "$dir" == /* ]]; then
+		current="/"
+	fi
+
+	IFS='/' read -r -a parts <<<"$dir"
+	for component in "${parts[@]}"; do
+		if [[ -z "$component" || "$component" == "." ]]; then
+			continue
+		fi
+		if [[ "$current" == "/" ]]; then
+			current="/$component"
+		elif [[ -n "$current" ]]; then
+			current="$current/$component"
+		else
+			current="$component"
+		fi
+		if [[ ( -e "$current" || -L "$current" ) && ! -d "$current" ]]; then
+			if [[ "$FORCE" == "1" ]]; then
+				move_conflicting_path "$current"
+			else
+				err "Cannot create $dir because $current exists and is not a directory. Move or remove $current, then rerun this script, or rerun with --force to move it aside automatically."
+				return 1
+			fi
+		fi
+	done
+
+	mkdir -p "$dir"
+}
+
 write_file() {
 	local path="$1"
 	local content="$2"
 	local mode="${3:-0644}"
+	local existing_version versioned_content
+
+	versioned_content="$(add_managed_version_marker "$path" "$content")"
 
 	if [[ -e "$path" && "$FORCE" != "1" ]]; then
-		warn "$path already exists; leaving it unchanged. Use --force to overwrite after backup."
+		existing_version="$(managed_file_version "$path" 2>/dev/null || true)"
+		if [[ "$existing_version" == "$SCRIPT_VERSION" ]]; then
+			log "$path already exists at CodexHelper version $SCRIPT_VERSION; leaving it unchanged."
+		else
+			warn "$path already exists from CodexHelper version ${existing_version:-unknown}; current version is $SCRIPT_VERSION. Use --force to update after backup."
+		fi
 		return 0
 	fi
 
@@ -457,8 +550,8 @@ write_file() {
 		return 0
 	fi
 
-	mkdir -p "$(dirname "$path")"
-	printf '%s\n' "$content" >"$path"
+	ensure_parent_dir "$path"
+	printf '%s\n' "$versioned_content" >"$path"
 	chmod "$mode" "$path"
 	log "Wrote $path"
 }
@@ -546,6 +639,7 @@ check_prereqs() {
 	done
 	print_cli_resolution semgrep
 	print_cli_resolution code-review-graph
+	print_cli_resolution rtk
 	print_ponytail_status
 }
 
@@ -896,11 +990,11 @@ setup_impeccable() {
 		if have npx; then
 			warn "Impeccable install may write .agents/, .codex/hooks.json, .impeccable/, PRODUCT.md, and DESIGN.md."
 			warn "Codex still requires opening /hooks and approving the Impeccable project hook before it runs automatically."
-			if confirm "Install Impeccable design skill/hooks with npx impeccable install?"; then
+			if confirm "Install Impeccable design skill/hooks for Codex?"; then
 				if [[ "$DRY_RUN" == "1" ]]; then
-					run npx npx impeccable install
+					run npx npx impeccable skills install -y --providers=codex --scope=project
 					record_install_skipped "Impeccable install would run (dry-run)"
-				elif run npx npx impeccable install; then
+				elif run npx npx impeccable skills install -y --providers=codex --scope=project; then
 					record_install_ok "Impeccable install completed"
 					record_install_skipped "Impeccable still needs /impeccable init and Codex /hooks approval"
 				else
@@ -1059,7 +1153,7 @@ install_global_tools() {
 
 has_source_file() {
 	local match
-	match="$(find . -maxdepth 4 \
+	match="$(find . \
 		\( -name '.git' \
 		-o -name 'node_modules' \
 		-o -name 'vendor' \
@@ -1073,7 +1167,6 @@ has_source_file() {
 }
 
 detect_file_signals() {
-	PACKAGE_MANAGER=""
 	PY_FILES=0
 	PY_NOTEBOOKS=0
 	PY_CONFIGS=0
@@ -1108,7 +1201,7 @@ detect_file_signals() {
 	while IFS= read -r -d '' path; do
 		path="${path#./}"
 		base="${path##*/}"
-		lower="${path,,}"
+		lower="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
 
 		case "$base" in
 		package.json) NODE_MANIFESTS=$((NODE_MANIFESTS + 1)) ;;
@@ -1140,7 +1233,7 @@ detect_file_signals() {
 			if [[ -x "$path" && "$base" != *.* ]]; then
 				first_line="$(sed -n '1p' "$path" 2>/dev/null || true)"
 				case "$first_line" in
-				'#!'*sh | '#!'*bash | '#!'*zsh) SHELL_FILES=$((SHELL_FILES + 1)) ;;
+				'#!'*sh) SHELL_FILES=$((SHELL_FILES + 1)) ;;
 				esac
 			fi
 			;;
@@ -1161,14 +1254,7 @@ detect_file_signals() {
 		-o -name 'obsidian' \) -prune \
 		-o -type f -print0 2>/dev/null)
 
-	if [[ "$NODE_MANIFESTS" -gt 0 ]]; then
-		has_node=1
-		if [[ -f pnpm-lock.yaml ]] && have pnpm; then
-			PACKAGE_MANAGER="pnpm"
-		elif [[ -f yarn.lock ]] && have yarn; then
-			PACKAGE_MANAGER="yarn"
-		else PACKAGE_MANAGER="npm"; fi
-	fi
+	[[ "$NODE_MANIFESTS" -gt 0 ]] && has_node=1
 	[[ "$ANGULAR_MANIFESTS" -gt 0 ]] && has_angular=1
 	[[ "$PY_FILES" -gt 0 || "$PY_NOTEBOOKS" -gt 0 || "$PY_CONFIGS" -gt 0 ]] && has_python=1
 	[[ "$PHP_FILES" -gt 0 || "$PHP_MANIFESTS" -gt 0 ]] && has_php=1
@@ -1305,10 +1391,20 @@ npx ctx7 setup
 
 Use Context7 when work depends on external library, framework, API, setup, or configuration details.
 
+RTK:
+
+```bash
+rtk git diff
+rtk git status
+rtk gain
+```
+
+The generated Codex RTK hook rewrites eligible literal read-only/noisy Bash commands through `rtk` when RTK is installed. Use `rtk proxy <cmd>` only when raw, unfiltered output is needed.
+
 Impeccable for frontend design:
 
 ```bash
-npx impeccable install
+npx impeccable skills install -y --providers=codex --scope=project
 /impeccable init
 /impeccable polish the page or component
 /impeccable audit the frontend area
@@ -2211,7 +2307,7 @@ import sys
 from pathlib import Path
 
 
-EXCLUDED_DIRS = {".cache", ".git", ".venv", "build", "coverage", "dist", "node_modules", "obsidian", "vendor"}
+EXCLUDED_DIRS = {".agents", ".cache", ".codex", ".git", ".venv", "build", "coverage", "dist", "node_modules", "obsidian", "vendor"}
 BIOME_EXTS = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".css", ".json", ".jsonc"}
 HTML_EXTS = {".html", ".htm"}
 FRONTEND_DESIGN_EXTS = {
@@ -2427,6 +2523,14 @@ create_codex_hooks_templates() {
 	fi
 
 	log "Creating Codex hook templates with Git-writing command blockers"
+	if [[ "$CREATE_RTK_HOOK" == "1" ]]; then
+		warn "RTK PreToolUse hook is enabled by default. It rewrites eligible literal read-only/noisy Bash commands through 'rtk' when RTK is installed."
+		warn "Use --no-rtk-hook to skip it. Codex still requires /hooks review/trust before project hooks run."
+		if ! have_cli rtk; then
+			warn "rtk was not found. The generated RTK hook will pass commands through until RTK is installed and on PATH."
+			record_install_skipped "RTK hook created but rtk is not installed"
+		fi
+	fi
 
 	local pre_hook
 	pre_hook=$(
@@ -2529,6 +2633,122 @@ EOF_PRE_HOOK
 	)
 	write_file ".codex/hooks/pre_tool_use_policy.py" "$pre_hook" "0755"
 
+	if [[ "$CREATE_RTK_HOOK" == "1" ]]; then
+		local rtk_hook
+		rtk_hook=$(
+			cat <<'EOF_RTK_HOOK'
+#!/usr/bin/env python3
+"""Codex PreToolUse hook that routes eligible Bash commands through RTK.
+
+The hook is deliberately conservative. It rewrites simple read-only/noisy shell
+commands when `rtk` is available, and otherwise lets the original command run.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+import shutil
+import sys
+from typing import Any
+
+
+COMMAND_KEYS = ("command", "cmd")
+READ_ONLY_GIT_SUBCOMMANDS = {"diff", "log", "show", "status"}
+DIRECT_COMMANDS = {"grep", "ls"}
+INTERACTIVE_COMMANDS = {"less", "man", "more", "nano", "ssh", "tail", "top", "vim", "vi", "watch"}
+SHELL_META_RE = re.compile(r"[|;&<>`$*?\[\]{}()\r\n]")
+UNSAFE_GIT_OPTIONS = {"--ext-diff", "--output", "--textconv"}
+
+
+def load_payload() -> dict[str, Any]:
+    try:
+        value = json.load(sys.stdin)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def find_tool_input(payload: dict[str, Any]) -> dict[str, Any]:
+    tool_input = payload.get("tool_input")
+    if isinstance(tool_input, dict):
+        return tool_input
+    tool_input = payload.get("toolInput")
+    if isinstance(tool_input, dict):
+        return tool_input
+    return payload
+
+
+def command_key_and_value(tool_input: dict[str, Any]) -> tuple[str | None, str]:
+    for key in COMMAND_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return key, value.strip()
+    return None, ""
+
+
+def has_unsafe_git_option(parts: list[str]) -> bool:
+    for part in parts[2:]:
+        if part in UNSAFE_GIT_OPTIONS or part.startswith("--output="):
+            return True
+    return False
+
+
+def should_wrap(command: str) -> bool:
+    if not command or SHELL_META_RE.search(command):
+        return False
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    if not parts:
+        return False
+
+    executable = parts[0]
+    if executable == "rtk" or executable in INTERACTIVE_COMMANDS:
+        return False
+    if executable in DIRECT_COMMANDS:
+        return True
+    if executable == "git" and len(parts) >= 2:
+        return parts[1] in READ_ONLY_GIT_SUBCOMMANDS and not has_unsafe_git_option(parts)
+    return False
+
+
+def emit_passthrough() -> int:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse"}}))
+    return 0
+
+
+def main() -> int:
+    if shutil.which("rtk") is None:
+        return emit_passthrough()
+
+    payload = load_payload()
+    tool_input = find_tool_input(payload)
+    key, command = command_key_and_value(tool_input)
+    if key is None or not should_wrap(command):
+        return emit_passthrough()
+
+    wrapped = f"rtk {command}"
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "Routing eligible Bash command through RTK to reduce Codex token usage.",
+            "updatedInput": {"command": wrapped},
+        }
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+EOF_RTK_HOOK
+		)
+		write_file ".codex/hooks/rtk_pre_tool_use.py" "$rtk_hook" "0755"
+	fi
+
 	local post_hook
 	post_hook=$(
 		cat <<'EOF_POST_HOOK'
@@ -2580,7 +2800,7 @@ def git_root() -> Path:
     completed = subprocess.run(["git", "rev-parse", "--show-toplevel"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     if completed.returncode == 0 and completed.stdout.strip():
         return Path(completed.stdout.strip())
-    return Path.cwd()
+    return Path(__file__).resolve().parents[2]
 
 
 def main() -> int:
@@ -2660,7 +2880,7 @@ def git_root() -> Path:
     completed = subprocess.run(["git", "rev-parse", "--show-toplevel"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     if completed.returncode == 0 and completed.stdout.strip():
         return Path(completed.stdout.strip())
-    return Path.cwd()
+    return Path(__file__).resolve().parents[2]
 
 
 def main() -> int:
@@ -2703,23 +2923,55 @@ EOF_STOP_HOOK
 	)
 	write_file ".codex/hooks/stop_edited_check.py" "$stop_hook" "0755"
 
+	local rtk_config=""
+	local rtk_warning=""
+	if [[ "$CREATE_RTK_HOOK" == "1" ]]; then
+		rtk_warning=$(
+			cat <<'EOF_RTK_WARNING'
+# WARNING: RTK command rewriting is enabled by default.
+# It rewrites eligible literal read-only/noisy Bash commands through 'rtk' when RTK is installed.
+# Rerun part1.sh with --no-rtk-hook if you do not want this behavior.
+EOF_RTK_WARNING
+		)
+		rtk_config=$(
+			cat <<'EOF_RTK_CONFIG'
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0; hook="$root/.codex/hooks/rtk_pre_tool_use.py"; [ -f "$hook" ] || exit 0; exec python3 "$hook"'
+timeout = 30
+statusMessage = "Routing eligible shell output through RTK"
+
+EOF_RTK_CONFIG
+		)
+	fi
+
 	local config_snippet
 	config_snippet=$(
-		cat <<'EOF_CODEX_CONFIG'
+		{
+			cat <<'EOF_CODEX_CONFIG_HEAD'
 # Codex hook config snippet.
 # Review before copying into ~/.codex/config.toml.
+EOF_CODEX_CONFIG_HEAD
+			[[ -n "$rtk_warning" ]] && printf '%s\n' "$rtk_warning"
+			cat <<'EOF_CODEX_CONFIG_HEAD'
 # This blocks Codex Bash tool calls that try to stage, commit, push, rewrite history,
 # change branches, or run obviously destructive commands.
 
 [features]
 hooks = true
 
+EOF_CODEX_CONFIG_HEAD
+			[[ -n "$rtk_config" ]] && printf '%s\n\n' "$rtk_config"
+			cat <<'EOF_CODEX_CONFIG_TAIL'
 [[hooks.PreToolUse]]
 matcher = "^Bash$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'python3 "$(git rev-parse --show-toplevel)/.codex/hooks/pre_tool_use_policy.py"'
+command = 'root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0; hook="$root/.codex/hooks/pre_tool_use_policy.py"; [ -f "$hook" ] || exit 0; exec python3 "$hook"'
 timeout = 30
 statusMessage = "Blocking Git-writing/destructive commands"
 
@@ -2728,7 +2980,7 @@ matcher = "^Bash$"
 
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = 'python3 "$(git rev-parse --show-toplevel)/.codex/hooks/post_tool_use.py"'
+command = 'root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0; hook="$root/.codex/hooks/post_tool_use.py"; [ -f "$hook" ] || exit 0; exec python3 "$hook"'
 timeout = 30
 statusMessage = "Recording command result"
 
@@ -2737,7 +2989,7 @@ matcher = "^(apply_patch|Edit|Write)$"
 
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = 'python3 "$(git rev-parse --show-toplevel)/.codex/hooks/post_edit_check.py"'
+command = 'root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0; hook="$root/.codex/hooks/post_edit_check.py"; [ -f "$hook" ] || exit 0; exec python3 "$hook"'
 timeout = 120
 statusMessage = "Formatting and checking edited file"
 
@@ -2745,10 +2997,11 @@ statusMessage = "Formatting and checking edited file"
 
 [[hooks.Stop.hooks]]
 type = "command"
-command = 'python3 "$(git rev-parse --show-toplevel)/.codex/hooks/stop_edited_check.py"'
+command = 'root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0; hook="$root/.codex/hooks/stop_edited_check.py"; [ -f "$hook" ] || exit 0; exec python3 "$hook"'
 timeout = 300
 statusMessage = "Running edited-file quality gate"
-EOF_CODEX_CONFIG
+EOF_CODEX_CONFIG_TAIL
+		}
 	)
 	write_file ".codex/config-snippet.toml" "$config_snippet"
 	write_file ".codex/config.toml" "$config_snippet"
@@ -2757,12 +3010,14 @@ EOF_CODEX_CONFIG
 codex_config_candidates() {
 	# Print likely Codex config locations, one per line, without duplicates.
 	{
+		local candidate
 		if [[ -n "${CODEX_CONFIG:-}" ]]; then printf '%s\n' "$CODEX_CONFIG"; fi
 		printf '%s\n' "$HOME/.codex/config.toml"
 		if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then printf '%s\n' "$XDG_CONFIG_HOME/codex/config.toml"; fi
 		printf '%s\n' "$HOME/.config/codex/config.toml"
-		if [[ -d "$HOME/.codex" ]]; then find "$HOME/.codex" -maxdepth 2 -name 'config.toml' -type f 2>/dev/null || true; fi
-		if [[ -d "$HOME/.config/codex" ]]; then find "$HOME/.config/codex" -maxdepth 2 -name 'config.toml' -type f 2>/dev/null || true; fi
+		for candidate in "$HOME/.codex"/*/config.toml "$HOME/.config/codex"/*/config.toml; do
+			[[ -f "$candidate" ]] && printf '%s\n' "$candidate"
+		done
 	} | awk 'NF && !seen[$0]++'
 }
 
@@ -2944,7 +3199,14 @@ run_final_checks() {
 
 	bash -n vibe_scripts/agent-verify.sh || warn "vibe_scripts/agent-verify.sh has a syntax error."
 	if [[ -f .codex/hooks/pre_tool_use_policy.py ]]; then
-		python3 -m py_compile .codex/hooks/pre_tool_use_policy.py .codex/hooks/post_tool_use.py || warn "Codex hook template Python syntax failed."
+		local hook_files=(
+			.codex/hooks/pre_tool_use_policy.py
+			.codex/hooks/post_tool_use.py
+			.codex/hooks/post_edit_check.py
+			.codex/hooks/stop_edited_check.py
+		)
+		[[ -f .codex/hooks/rtk_pre_tool_use.py ]] && hook_files+=(.codex/hooks/rtk_pre_tool_use.py)
+		python3 -m py_compile "${hook_files[@]}" || warn "Codex hook template Python syntax failed."
 	fi
 
 	if have_cli code-review-graph; then
@@ -3068,9 +3330,10 @@ print_next_steps() {
    make wiki-ai
    Review codebase-wiki/ before relying on generated sections.
 
-4. Trust Codex enforcement hooks
-   This bootstrap writes project hooks under .codex/ that make Codex run the
+4. Trust Codex enforcement hooks when enabled
+   Unless --no-codex-hooks was used, this bootstrap writes project hooks under .codex/ that make Codex run the
    formatter, linter, and typechecker on edited files:
+   - PreToolUse routes eligible shell output through RTK when that hook is enabled and RTK is installed.
    - PostToolUse for apply_patch/Edit/Write checks each edited file.
    - Stop rechecks recorded edited files before Codex finishes a turn.
 
@@ -3114,7 +3377,38 @@ EOF_PONYTAIL_NOT_CONFIGURED
    Run when ready for interactive OAuth/API setup:
    npx ctx7 setup
 
-7. Impeccable frontend design skill
+EOF_NEXT
+
+	if [[ "$CREATE_CODEX_HOOKS" != "1" ]]; then
+		cat <<'EOF_RTK_NEXT_NO_HOOKS'
+7. RTK automatic shell-output reduction
+   RTK command rewriting was skipped because --no-codex-hooks was used.
+   Rerun part1.sh with Codex hooks enabled to create the project RTK hook.
+
+EOF_RTK_NEXT_NO_HOOKS
+	elif [[ "$CREATE_RTK_HOOK" == "1" ]]; then
+		cat <<'EOF_RTK_NEXT'
+7. RTK automatic shell-output reduction
+   The project RTK PreToolUse hook is created by default with Codex hooks.
+   It rewrites eligible literal read-only/noisy Bash commands through rtk when RTK is installed.
+   Install RTK separately if needed, then restart Codex and approve the hook in /hooks:
+   curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh
+   rtk init --codex
+
+   To avoid command rewriting, rerun part1.sh with --no-rtk-hook.
+
+EOF_RTK_NEXT
+	else
+		cat <<'EOF_RTK_NEXT_DISABLED'
+7. RTK automatic shell-output reduction
+   RTK command rewriting was skipped because --no-rtk-hook was used.
+   Rerun part1.sh without --no-rtk-hook to create the project RTK PreToolUse hook.
+
+EOF_RTK_NEXT_DISABLED
+	fi
+
+	cat <<'EOF_NEXT'
+8. Impeccable frontend design skill
    Run only when you want Codex to use Impeccable for frontend design tasks:
    bash part1.sh --impeccable
    /impeccable init
@@ -3123,7 +3417,7 @@ EOF_PONYTAIL_NOT_CONFIGURED
    and start a new thread. Frontend design tasks should then use $impeccable or
    /impeccable for design context, polish, critique, audit, and detector checks.
 
-8. code-review-graph
+9. code-review-graph
 EOF_NEXT
 
 	if have_cli code-review-graph && ! binary_in_active_venv code-review-graph; then
@@ -3146,7 +3440,7 @@ EOF_CRG_MISSING
 	fi
 
 	cat <<'EOF_NEXT'
-9. Codex Git-command blocker
+10. Codex Git-command blocker
    The script searches for ~/.codex/config.toml and can apply the hook when you approve it.
    To apply non-interactively, rerun with --apply-codex-config.
    This blocks Codex Bash calls for git add/commit/push/reset/checkout/etc.

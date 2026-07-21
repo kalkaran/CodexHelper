@@ -5,9 +5,13 @@ set -euo pipefail
 # Quality gate setup for AI coding workflows on Ubuntu WSL.
 # It detects likely repo types, offers to install missing dev quality tools,
 # then wires Makefile targets for tools/scripts that exist.
+#
+# Version: 2026-07-20-v15
 
+SCRIPT_VERSION="2026-07-20-v15"
 DRY_RUN=0
 YES=0
+FORCE=0
 WIRE_MODE="ask"    # ask | yes | no
 INSTALL_MODE="ask" # ask | yes | no
 FIX_MODE="ask"     # ask | yes | no
@@ -26,6 +30,7 @@ Usage: part2.sh [options]
 Options:
   --dry-run          Show what would happen without writing files.
   --yes              Non-interactive defaults. Continues with available checks.
+  --force            Update managed files after backing up existing copies.
   --fresh-install    Fresh quality setup: install missing tools and wire Makefile.
   --install          Install missing recommended quality tools without prompting.
   --no-install       Do not install tools; recommendations/wiring only.
@@ -63,8 +68,13 @@ while [[ $# -gt 0 ]]; do
 		YES=1
 		shift
 		;;
+	--force)
+		FORCE=1
+		shift
+		;;
 	--fresh-install)
 		FRESH_INSTALL=1
+		FORCE=1
 		INSTALL_MODE="yes"
 		WIRE_MODE="yes"
 		shift
@@ -160,6 +170,36 @@ fi
 
 has_file() { [[ -f "$1" ]]; }
 cmd_exists() { command -v "$1" >/dev/null 2>&1; }
+tool_path() {
+	local binary="$1"
+	local candidate
+	for candidate in "node_modules/.bin/$binary" ".venv/bin/$binary" "vendor/bin/$binary"; do
+		if [[ -x "$candidate" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	if command -v "$binary" >/dev/null 2>&1; then
+		command -v "$binary"
+		return 0
+	fi
+	return 1
+}
+
+tool_exists() {
+	local binary="$1"
+	tool_path "$binary" >/dev/null 2>&1
+}
+
+tool_cmd() {
+	local binary="$1"
+	local path
+	path="$(tool_path "$binary" 2>/dev/null || true)"
+	case "$path" in
+	node_modules/.bin/* | .venv/bin/* | vendor/bin/*) printf '%s\n' "$path" ;;
+	*) printf '%s\n' "$binary" ;;
+	esac
+}
 
 resolve_package_manager() {
 	command -v apt-get
@@ -230,7 +270,7 @@ semgrep_cmd() {
 	else
 		true
 	fi
-	printf 'SEMGREP_LOG_FILE=.cache/semgrep/semgrep.log SEMGREP_SETTINGS_FILE=.cache/semgrep/settings.yml SEMGREP_VERSION_CACHE_PATH=.cache/semgrep/version-cache semgrep'
+	printf 'SEMGREP_LOG_FILE=.cache/semgrep/semgrep.log SEMGREP_SETTINGS_FILE=.cache/semgrep/settings.yml SEMGREP_VERSION_CACHE_PATH=.cache/semgrep/version-cache %q' "$(tool_cmd semgrep)"
 }
 
 run_semgrep_cli() {
@@ -258,11 +298,13 @@ run_semgrep_cli() {
 
 cmd_works() {
 	local cmd="$1"
-	command -v "$cmd" >/dev/null 2>&1 || return 1
+	local path
+	path="$(tool_path "$cmd" 2>/dev/null || true)"
+	[[ -n "$path" ]] || return 1
 	if [[ "$cmd" == "semgrep" ]]; then
 		return 0
 	fi
-	"$cmd" --version >/dev/null 2>&1
+	"$path" --version >/dev/null 2>&1
 }
 
 UV_TOOL_BIN_DIR="${UV_TOOL_BIN_DIR:-$HOME/.local/bin}"
@@ -274,6 +316,8 @@ has_any() {
 	local match
 	match="$(find . -maxdepth 4 \
 		\( -name '.git' \
+		-o -name '.agents' \
+		-o -name '.codex' \
 		-o -name 'node_modules' \
 		-o -name 'vendor' \
 		-o -name 'dist' \
@@ -288,6 +332,113 @@ has_any() {
 
 local_bin_exists() {
 	[[ -x "node_modules/.bin/$1" ]]
+}
+
+safe_package_name() {
+	local base name
+	base="${ROOT##*/}"
+	name="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+	name="${name//%20/-}"
+	name="$(printf '%s' "$name" | tr ' _%+' '----' | tr -cd 'a-z0-9._-')"
+	name="$(printf '%s' "$name" | sed 's/^[._-]*//; s/[._-]*$//; s/--*/-/g')"
+	name="$(printf '%.200s' "$name" | sed 's/[._-]*$//')"
+	[[ -n "$name" ]] || name="codex-helper-project"
+	case "$name" in
+	[0-9]* | .* | _* | node_modules | favicon.ico) name="project-$name" ;;
+	esac
+	printf '%s\n' "$name"
+}
+
+create_minimal_package_json() {
+	if [[ -f package.json ]]; then
+		return 0
+	fi
+	local name
+	name="$(safe_package_name)"
+	if [[ "$DRY_RUN" -eq 1 ]]; then
+		log "Would create package.json with safe private package name: $name"
+		return 0
+	fi
+	cat >package.json <<EOF_PACKAGE_JSON
+{
+  "name": "$name",
+  "version": "0.0.0",
+  "private": true
+}
+EOF_PACKAGE_JSON
+	log "Created package.json with safe private package name: $name"
+}
+
+managed_file_version() {
+	local path="$1"
+	[[ -f "$path" ]] || return 1
+	sed -n '1,5s/.*CodexHelper-Version:[[:space:]]*\([^[:space:]>]*\).*/\1/p' "$path" | head -n 1
+}
+
+write_managed_temp() {
+	local path="$1"
+	local source="$2"
+	local mode="${3:-0644}"
+	local versioned first existing_version stamp backup suffix
+	versioned="$(mktemp)"
+	first=""
+	IFS= read -r first <"$source" || true
+
+	if [[ "$first" == '#!'* ]]; then
+		{
+			IFS= read -r first || true
+			printf '%s\n# CodexHelper-Version: %s\n' "$first" "$SCRIPT_VERSION"
+			cat
+		} <"$source" >"$versioned"
+	else
+		{
+			printf '# CodexHelper-Version: %s\n' "$SCRIPT_VERSION"
+			cat "$source"
+		} >"$versioned"
+	fi
+
+	if [[ -e "$path" && "$FORCE" -ne 1 ]]; then
+		existing_version="$(managed_file_version "$path" 2>/dev/null || true)"
+		if [[ "$existing_version" == "$SCRIPT_VERSION" ]]; then
+			if cmp -s "$path" "$versioned"; then
+				log "$path is already current at CodexHelper version $SCRIPT_VERSION."
+			else
+				warn "$path has CodexHelper version $SCRIPT_VERSION but different generated content. Use --force to regenerate it after backup."
+			fi
+		else
+			warn "$path is from CodexHelper version ${existing_version:-unknown}; version $SCRIPT_VERSION is available. Use --force to update it after backup."
+		fi
+		rm -f "$source" "$versioned"
+		return 0
+	fi
+
+	if [[ "$DRY_RUN" -eq 1 ]]; then
+		if [[ -e "$path" ]]; then
+			log "Would back up and update $path to CodexHelper version $SCRIPT_VERSION."
+		else
+			log "Would write $path at CodexHelper version $SCRIPT_VERSION."
+		fi
+		rm -f "$source" "$versioned"
+		return 0
+	fi
+
+	if [[ -e "$path" ]]; then
+		stamp="$(date +%Y%m%d-%H%M%S)"
+		backup="$path.bak.$stamp"
+		suffix=1
+		while [[ -e "$backup" ]]; do
+			backup="$path.bak.$stamp.$suffix"
+			suffix=$((suffix + 1))
+		done
+		cp -p "$path" "$backup"
+		log "Backed up $path -> $backup"
+	fi
+
+	mkdir -p "$(dirname "$path")"
+	mv "$versioned" "$path"
+	rm -f "$source"
+	chmod "$mode" "$path"
+	log "Wrote $path at CodexHelper version $SCRIPT_VERSION."
 }
 
 has_biome_config() {
@@ -343,7 +494,7 @@ install_missing_quality_tools() {
 		return 0
 	fi
 
-	if [[ "$PYTHON" -eq 1 ]] && ! cmd_exists ruff; then
+	if [[ "$PYTHON" -eq 1 ]] && ! tool_exists ruff; then
 		if cmd_exists uv && should_install "Install Ruff with uv?"; then
 			run_install "Ruff" uv tool install ruff || warn_python_index_unreachable "Ruff"
 			ensure_user_tool_path
@@ -352,21 +503,20 @@ install_missing_quality_tools() {
 		fi
 	fi
 
-	local need_node_tools=0
+	local node_packages=()
 	if [[ "$STATIC_WEB" -eq 1 || "$NODE_PKG" -eq 1 || "$TS" -eq 1 ]]; then
-		if ! local_bin_exists biome || ! local_bin_exists htmlhint; then
-			need_node_tools=1
-		fi
+		tool_exists biome || node_packages+=("@biomejs/biome")
+		tool_exists htmlhint || node_packages+=("htmlhint")
 	fi
 
-	if [[ "$need_node_tools" -eq 1 ]]; then
+	if [[ ${#node_packages[@]} -gt 0 ]]; then
 		if ! cmd_exists npm; then
-			warn "npm is missing; cannot install Biome/HTMLHint automatically."
-		elif should_install "Install JavaScript/CSS/HTML quality tools with npm?"; then
+			warn "npm is missing; cannot install missing JavaScript/CSS/HTML quality tools automatically."
+		elif should_install "Install missing JavaScript/CSS/HTML quality tools with npm?"; then
 			if [[ ! -f package.json ]]; then
-				run_install "package.json" npm init -y || warn "npm init failed."
+				create_minimal_package_json || warn "package.json creation failed."
 			fi
-			run_install "Biome and HTMLHint" npm install --save-dev --save-exact @biomejs/biome htmlhint || warn "npm quality tool install failed."
+			run_install "Missing JavaScript/CSS/HTML quality tools" npm install --save-dev --save-exact "${node_packages[@]}" || warn "npm quality tool install failed."
 		fi
 	fi
 
@@ -379,24 +529,30 @@ install_missing_quality_tools() {
 			fi
 		fi
 
-		if cmd_exists composer && { [[ ! -x vendor/bin/phpcs ]] || [[ ! -x vendor/bin/phpstan ]]; }; then
-			if should_install "Install PHP_CodeSniffer and PHPStan with Composer?"; then
-				run_install "PHPCS and PHPStan" composer require --dev squizlabs/php_codesniffer phpstan/phpstan || warn "Composer quality tool install failed."
+		local php_packages=()
+		tool_exists phpcs || php_packages+=("squizlabs/php_codesniffer")
+		tool_exists phpstan || php_packages+=("phpstan/phpstan")
+		if cmd_exists composer && [[ ${#php_packages[@]} -gt 0 ]]; then
+			if should_install "Install missing PHP quality tools with Composer?"; then
+				run_install "Missing PHP quality tools" composer require --dev "${php_packages[@]}" || warn "Composer quality tool install failed."
 			fi
 		fi
 	fi
 
 	if [[ "$SHELL_LANG" -eq 1 ]]; then
-		if ! cmd_exists shellcheck || ! cmd_exists shfmt; then
-			if cmd_package_manager && should_install "Install ShellCheck and shfmt with apt-get?"; then
-				run_package_manager_install shellcheck shfmt || warn "Shell tool install failed."
+		local shell_packages=()
+		tool_exists shellcheck || shell_packages+=("shellcheck")
+		tool_exists shfmt || shell_packages+=("shfmt")
+		if [[ ${#shell_packages[@]} -gt 0 ]]; then
+			if cmd_package_manager && should_install "Install missing shell quality tools with apt-get?"; then
+				run_package_manager_install "${shell_packages[@]}" || warn "Shell tool install failed."
 			else
 				warn "shellcheck/shfmt missing and apt-get install unavailable or skipped."
 			fi
 		fi
 	fi
 
-	if ! cmd_exists semgrep; then
+	if ! tool_exists semgrep; then
 		if cmd_exists pipx && should_install_optional "Install optional Semgrep with existing pipx?"; then
 			run_install "Semgrep" pipx install semgrep || warn "Semgrep install failed."
 			ensure_user_tool_path
@@ -477,13 +633,15 @@ detect_file_signals() {
 			if [[ -x "$path" && "$base" != *.* ]]; then
 				first_line="$(sed -n '1p' "$path" 2>/dev/null || true)"
 				case "$first_line" in
-				'#!'*sh | '#!'*bash | '#!'*zsh) SHELL_FILES=$((SHELL_FILES + 1)) ;;
+				'#!'*sh) SHELL_FILES=$((SHELL_FILES + 1)) ;;
 				esac
 			fi
 			;;
 		esac
 	done < <(find . \
 		\( -name '.git' \
+		-o -name '.agents' \
+		-o -name '.codex' \
 		-o -name 'node_modules' \
 		-o -name 'vendor' \
 		-o -name 'dist' \
@@ -526,7 +684,7 @@ print_detection() {
 	[[ "$GO_LANG" -eq 1 ]] && echo "  - Go: $GO_FILES .go, $GO_MANIFESTS go.mod"
 	[[ "$RUST_LANG" -eq 1 ]] && echo "  - Rust: $RUST_FILES .rs, $RUST_MANIFESTS Cargo.toml"
 	[[ "$DOTNET" -eq 1 ]] && echo "  - .NET: $DOTNET_FILES .cs, $DOTNET_MANIFESTS project/solution files"
-	[[ "$UNKNOWN" -eq 1 ]] && echo "  - No clear project type detected yet" || true
+	if [[ "$UNKNOWN" -eq 1 ]]; then echo "  - No clear project type detected yet"; fi
 	return 0
 }
 
@@ -583,7 +741,7 @@ JS/TS/HTML/CSS files without package.json:
   so Biome and HTMLHint can be installed as repo-local dev dependencies.
 
   If you install them yourself:
-    npm init -y
+    create a package.json with a valid lowercase package name
     npm install --save-dev --save-exact @biomejs/biome htmlhint
 WEBREC
 	fi
@@ -597,8 +755,8 @@ PHP:
 
   Then you can wire:
     php -l path/to/file.php
-    vendor/bin/phpcs --standard=PSR12 --extensions=php --ignore=vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/*,obsidian/* .
-    find . \( -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \) -prune -o -name '*.php' -print0 | xargs -0 vendor/bin/phpstan analyse --memory-limit=1G --no-progress --
+    vendor/bin/phpcs --standard=PSR12 --extensions=php --ignore=.agents/*,.codex/*,vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/*,obsidian/* .
+    find . \( -name '.agents' -o -name '.codex' -o -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \) -prune -o -name '*.php' -print0 | xargs -0 vendor/bin/phpstan analyse --memory-limit=1G --no-progress --
 PHPREC
 	fi
 
@@ -733,20 +891,21 @@ reset_checks() {
 
 detect_available_checks() {
 	reset_checks
+	local biome_scope="find . -mindepth 1 -maxdepth 1 ! -name .agents ! -name .codex -exec"
 
 	# Python checks
 	if [[ "$PYTHON" -eq 1 ]]; then
-		if cmd_exists ruff; then
-			add_check lint python "ruff check ."
-			add_check format python "ruff format ."
+		if tool_exists ruff; then
+			add_check lint python "$(tool_cmd ruff) check ."
+			add_check format python "$(tool_cmd ruff) format ."
 		fi
-		if cmd_exists mypy; then
-			add_check type python "mypy ."
-		elif cmd_exists pyright; then
-			add_check type python "pyright ."
+		if tool_exists mypy; then
+			add_check type python "$(tool_cmd mypy) ."
+		elif tool_exists pyright; then
+			add_check type python "$(tool_cmd pyright) ."
 		fi
-		if cmd_exists pytest && has_any \( -path './tests/*' -o -name 'test_*.py' -o -name '*_test.py' \); then
-			add_check test python "pytest -q"
+		if tool_exists pytest && has_any \( -path './tests/*' -o -name 'test_*.py' -o -name '*_test.py' \); then
+			add_check test python "$(tool_cmd pytest) -q"
 		fi
 	fi
 
@@ -761,41 +920,41 @@ detect_available_checks() {
 	# Static web checks
 	if [[ "$STATIC_WEB" -eq 1 ]]; then
 		if local_bin_exists biome; then
-			add_check lint web "npx biome check ."
-			add_check format web "npx biome check --write ."
-		elif cmd_exists biome; then
-			add_check lint web "biome check ."
-			add_check format web "biome check --write ."
+			add_check lint web "$biome_scope npx biome check {} +"
+			add_check format web "$biome_scope npx biome check --write {} +"
+		elif tool_exists biome; then
+			add_check lint web "$biome_scope $(tool_cmd biome) check {} +"
+			add_check format web "$biome_scope $(tool_cmd biome) check --write {} +"
 		fi
 		if has_any -name '*.html'; then
 			if local_bin_exists htmlhint; then
-				add_check lint html "npx htmlhint --ignore \"**/.git/**,**/node_modules/**,**/vendor/**,**/dist/**,**/build/**,**/coverage/**,**/.cache/**,**/.venv/**,**/obsidian/**\" \"**/*.html\""
-			elif cmd_exists htmlhint; then
-				add_check lint html "htmlhint --ignore \"**/.git/**,**/node_modules/**,**/vendor/**,**/dist/**,**/build/**,**/coverage/**,**/.cache/**,**/.venv/**,**/obsidian/**\" \"**/*.html\""
+				add_check lint html "npx htmlhint --ignore \"**/.git/**,**/.agents/**,**/.codex/**,**/node_modules/**,**/vendor/**,**/dist/**,**/build/**,**/coverage/**,**/.cache/**,**/.venv/**,**/obsidian/**\" \"**/*.html\""
+			elif tool_exists htmlhint; then
+				add_check lint html "$(tool_cmd htmlhint) --ignore \"**/.git/**,**/.agents/**,**/.codex/**,**/node_modules/**,**/vendor/**,**/dist/**,**/build/**,**/coverage/**,**/.cache/**,**/.venv/**,**/obsidian/**\" \"**/*.html\""
 			fi
 		fi
 	fi
 
 	# PHP checks
 	if [[ "$PHP_LANG" -eq 1 ]]; then
-		if cmd_exists php && has_any -name '*.php'; then
-			add_check lint php-syntax "find . \\( -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \\) -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l"
+		if tool_exists php && has_any -name '*.php'; then
+			add_check lint php-syntax "find . \\( -name '.agents' -o -name '.codex' -o -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \\) -prune -o -name '*.php' -print0 | xargs -0 -n1 $(tool_cmd php) -l"
 		fi
-		if [[ -x vendor/bin/phpcs ]]; then
-			add_check lint phpcs "vendor/bin/phpcs --standard=PSR12 --extensions=php --ignore=vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/*,obsidian/* ."
+		if tool_exists phpcs; then
+			add_check lint phpcs "$(tool_cmd phpcs) --standard=PSR12 --extensions=php --ignore=.agents/*,.codex/*,vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/*,obsidian/* ."
 		fi
-		if [[ -x vendor/bin/phpcbf ]]; then
-			add_check format phpcbf "vendor/bin/phpcbf --standard=PSR12 --extensions=php --ignore=vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/*,obsidian/* . || true"
+		if tool_exists phpcbf; then
+			add_check format phpcbf "$(tool_cmd phpcbf) --standard=PSR12 --extensions=php --ignore=.agents/*,.codex/*,vendor/*,node_modules/*,dist/*,build/*,coverage/*,.git/*,.cache/*,.venv/*,obsidian/* . || true"
 		fi
-		if [[ -x vendor/bin/phpstan ]]; then
-			add_check type phpstan "find . \\( -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \\) -prune -o -name '*.php' -print0 | xargs -0 vendor/bin/phpstan analyse --memory-limit=1G --no-progress --"
+		if tool_exists phpstan; then
+			add_check type phpstan "find . \\( -name '.agents' -o -name '.codex' -o -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \\) -prune -o -name '*.php' -print0 | xargs -0 $(tool_cmd phpstan) analyse --memory-limit=1G --no-progress --"
 		fi
 	fi
 
 	# Shell checks
 	if [[ "$SHELL_LANG" -eq 1 ]]; then
-		if cmd_exists shellcheck; then add_check lint shell "find . \\( -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \\) -prune -o -name '*.sh' -print0 | xargs -0 shellcheck"; fi
-		if cmd_exists shfmt; then add_check format shell "find . \\( -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \\) -prune -o -name '*.sh' -print0 | xargs -0 shfmt -w"; fi
+		if tool_exists shellcheck; then add_check lint shell "find . \\( -name '.agents' -o -name '.codex' -o -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \\) -prune -o -name '*.sh' -print0 | xargs -0 $(tool_cmd shellcheck)"; fi
+		if tool_exists shfmt; then add_check format shell "find . \\( -name '.agents' -o -name '.codex' -o -name 'vendor' -o -name 'node_modules' -o -name 'dist' -o -name 'build' -o -name 'coverage' -o -name '.git' -o -name '.cache' -o -name '.venv' -o -name 'obsidian' \\) -prune -o -name '*.sh' -print0 | xargs -0 $(tool_cmd shfmt) -w"; fi
 	fi
 
 	# Go checks
@@ -860,19 +1019,15 @@ print_available_checks() {
 		echo "  Security:"
 		printf '    - %s\n' "${SECURITY_CMDS[@]}"
 	fi
-	[[ "$any" -eq 0 ]] && echo "  None. Install a recommended tool manually first." || true
+	if [[ "$any" -eq 0 ]]; then echo "  None. Install a recommended tool manually first."; fi
 	return 0
 }
 
 write_ai_quality_wrapper() {
 	local path="vibe_scripts/ai-quality-wrapper.py"
-	if [[ "$DRY_RUN" -eq 1 ]]; then
-		log "Would write $path for AI-safe capped linter output."
-		return 0
-	fi
-
-	mkdir -p vibe_scripts
-	cat >"$path" <<'PYWRAPPER'
+	local tmp
+	tmp="$(mktemp)"
+	cat >"$tmp" <<'PYWRAPPER'
 #!/usr/bin/env python3
 """Run a quality command with AI-safe output.
 
@@ -1004,19 +1159,14 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 PYWRAPPER
-	chmod 0755 "$path"
-	log "Wrote $path."
+	write_managed_temp "$path" "$tmp" 0755
 }
 
 write_agent_check_edited() {
 	local path="vibe_scripts/agent-check-edited.py"
-	if [[ "$DRY_RUN" -eq 1 ]]; then
-		log "Would write $path for formatter-first edited-file checks."
-		return 0
-	fi
-
-	mkdir -p vibe_scripts
-	cat >"$path" <<'PYCHECK'
+	local tmp
+	tmp="$(mktemp)"
+	cat >"$tmp" <<'PYCHECK'
 #!/usr/bin/env python3
 """Format and verify files edited by the agent.
 
@@ -1038,7 +1188,9 @@ from pathlib import Path
 
 
 EXCLUDED_DIRS = {
+    ".agents",
     ".cache",
+    ".codex",
     ".git",
     ".venv",
     "build",
@@ -1272,8 +1424,7 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 PYCHECK
-	chmod 0755 "$path"
-	log "Wrote $path."
+	write_managed_temp "$path" "$tmp" 0755
 }
 
 ensure_cache_gitignored() {
@@ -1431,19 +1582,7 @@ write_makefile() {
 		fi
 	} >"$tmp"
 
-	if [[ "$DRY_RUN" -eq 1 ]]; then
-		log "Would write $mf with:"
-		sed 's/^/  /' "$tmp"
-		rm -f "$tmp"
-		return 0
-	fi
-
-	if [[ -f "$mf" ]]; then
-		cp "$mf" "$mf.bak.$(date +%Y%m%d-%H%M%S)"
-		log "Backed up existing Makefile."
-	fi
-	mv "$tmp" "$mf"
-	log "Wrote $mf."
+	write_managed_temp "$mf" "$tmp"
 }
 
 write_biome_config() {
@@ -1482,6 +1621,8 @@ write_biome_config() {
       "biome.json",
       "package.json",
       "!!**/.git",
+      "!!**/.agents",
+      "!!**/.codex",
       "!!**/node_modules",
       "!!**/vendor",
       "!!**/dist",

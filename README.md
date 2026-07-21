@@ -153,8 +153,10 @@ What the hooks do:
 
 - `pre_tool_use_policy.py` runs before Codex shell commands. It blocks Git-writing commands and a few destructive shell commands when configured.
 - `post_tool_use.py` runs after tools. It is a placeholder for future logging or checks and does not block anything today.
+- `rtk_pre_tool_use.py` runs before Codex shell commands. It is created by default and rewrites eligible literal, read-only/noisy commands through `rtk` when RTK is installed; shell expansions and potentially mutating forms pass through unchanged. Use `--no-rtk-hook` to skip it.
 - `post_edit_check.py` runs after Codex edit tools. It checks the edited paths and records them for the stop hook.
 - `stop_edited_check.py` runs before Codex stops. It rechecks recorded edited files and blocks stopping if the edited-file check fails.
+- Hook launchers exit successfully without running when Codex has no Git working tree or the configured project hook file is missing, so a stale session cannot be trapped by a `/.codex/hooks/...` lookup.
 
 Use these commands when needed:
 
@@ -181,7 +183,11 @@ Review generated `codebase-wiki/` changes before treating them as durable projec
 ## Notes
 
 - `part1.sh` does not auto-trust Codex hooks. Trust them manually with `/hooks`.
+- `part1.sh` creates the RTK PreToolUse hook by default when Codex hooks are enabled. The hook passes through unchanged if `rtk` is not installed.
 - `part2.sh` only wires checks for tools that are actually available.
+- The installers detect existing tools on `PATH`, in repo-local `node_modules/.bin`, in `.venv/bin`, and in Composer `vendor/bin` before prompting for installs. Project-local tools take precedence when checks are wired.
+- Generated managed files include a `CodexHelper-Version` marker so reruns can report whether an existing file is current or older. Use `--force` with either script to back up and update managed files; `--fresh-install` implies `--force` in `part2.sh`.
+- When `part2.sh` needs to create `package.json`, it writes a minimal private package with a sanitized name instead of relying on `npm init -y`; this avoids invalid names from folders such as `data%20science%20cloud%20platform`.
 - Semgrep is wired as an explicit security check, not as an automatic hook.
 - The WSL scripts are intended for Ubuntu WSL, not every Linux distro.
 - Full tool logs are stored under `.cache/`; AI-facing output is capped.
