@@ -513,7 +513,7 @@ ensure_parent_dir() {
 		else
 			current="$component"
 		fi
-		if [[ ( -e "$current" || -L "$current" ) && ! -d "$current" ]]; then
+		if [[ (-e "$current" || -L "$current") && ! -d "$current" ]]; then
 			if [[ "$FORCE" == "1" ]]; then
 				move_conflicting_path "$current"
 			else

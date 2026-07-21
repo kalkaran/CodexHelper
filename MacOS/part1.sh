@@ -510,7 +510,7 @@ ensure_parent_dir() {
 		else
 			current="$component"
 		fi
-		if [[ ( -e "$current" || -L "$current" ) && ! -d "$current" ]]; then
+		if [[ (-e "$current" || -L "$current") && ! -d "$current" ]]; then
 			if [[ "$FORCE" == "1" ]]; then
 				move_conflicting_path "$current"
 			else
@@ -2658,7 +2658,7 @@ COMMAND_KEYS = ("command", "cmd")
 READ_ONLY_GIT_SUBCOMMANDS = {"diff", "log", "show", "status"}
 DIRECT_COMMANDS = {"grep", "ls"}
 INTERACTIVE_COMMANDS = {"less", "man", "more", "nano", "ssh", "tail", "top", "vim", "vi", "watch"}
-SHELL_META_RE = re.compile(r"[|;&<>`$*?\[\]{}()\r\n]")
+SHELL_META_RE = re.compile(r"[|;&<>\x60$*?\[\]{}()\r\n]")
 UNSAFE_GIT_OPTIONS = {"--ext-diff", "--output", "--textconv"}
 
 
